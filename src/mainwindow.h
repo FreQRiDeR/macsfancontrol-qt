@@ -32,6 +32,8 @@ private slots:
     void savePreset();
     void loadPreset();
     void deletePreset();
+    void exportPreset();
+    void importPreset();
     void copyDebugLogToClipboard();
 
 private:

@@ -19,6 +19,10 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileDialog>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
@@ -243,6 +247,18 @@ void MainWindow::createMenuBar()
     QAction *deletePresetAction = new QAction("&Delete Preset...", this);
     connect(deletePresetAction, &QAction::triggered, this, &MainWindow::deletePreset);
     presetsMenu->addAction(deletePresetAction);
+
+    presetsMenu->addSeparator();
+
+    QAction *exportPresetAction = new QAction("E&xport Preset...", this);
+    exportPresetAction->setShortcut(QKeySequence("Ctrl+E"));
+    connect(exportPresetAction, &QAction::triggered, this, &MainWindow::exportPreset);
+    presetsMenu->addAction(exportPresetAction);
+
+    QAction *importPresetAction = new QAction("&Import Preset...", this);
+    importPresetAction->setShortcut(QKeySequence("Ctrl+I"));
+    connect(importPresetAction, &QAction::triggered, this, &MainWindow::importPreset);
+    presetsMenu->addAction(importPresetAction);
 
     // Help menu
     QMenu *helpMenu = menuBar()->addMenu("&Help");
@@ -872,4 +888,209 @@ void MainWindow::deletePreset()
             qDebug() << "Preset deleted:" << presetName;
         }
     }
+}
+
+void MainWindow::exportPreset()
+{
+    QSettings settings("macsfancontrol", "macsfancontrol-qt");
+    settings.beginGroup("Presets");
+    QStringList presets = settings.childGroups();
+    settings.endGroup();
+
+    if (presets.isEmpty()) {
+        QMessageBox::information(this, "Export Preset",
+                               "No saved presets found.\nUse 'Save Preset' to create one.");
+        return;
+    }
+
+    bool ok;
+    QString presetName = QInputDialog::getItem(this, "Export Preset",
+                                              "Select preset to export:",
+                                              presets, 0, false, &ok);
+
+    if (!ok || presetName.isEmpty()) {
+        return;
+    }
+
+    // Build JSON document
+    QJsonObject root;
+    root["format"] = "macsfancontrol-preset";
+    root["version"] = 1;
+    root["presetName"] = presetName;
+    root["fanCount"] = fanWidgets.size();
+
+    // Get preset data from settings
+    settings.beginGroup("Presets");
+    settings.beginGroup(presetName);
+
+    QJsonArray fans;
+    for (int i = 0; i < fanWidgets.size(); i++) {
+        settings.beginGroup(QString("Fan%1").arg(i));
+
+        QJsonObject fan;
+        fan["index"] = i;
+        fan["mode"] = settings.value("mode", MODE_AUTO).toInt();
+        fan["targetRPM"] = settings.value("targetRPM", 0).toInt();
+        fan["sensorIndex"] = settings.value("sensorIndex", -1).toInt();
+        fan["minTemp"] = settings.value("minTemp", 0).toInt();
+        fan["maxTemp"] = settings.value("maxTemp", 0).toInt();
+
+        // Add fan info for reference (label, min/max RPM)
+        FanSource source = fanSources[i];
+        int sourceIndex = fanSourceIndices[i];
+        QJsonObject fanInfo;
+        if (source == FAN_SOURCE_SMC) {
+            FanInfo info = smcInterface->getFans()[sourceIndex];
+            fanInfo["label"] = info.label;
+            fanInfo["minRPM"] = info.minRPM;
+            fanInfo["maxRPM"] = info.maxRPM;
+            fanInfo["type"] = "SMC";
+        } else {
+            HWMonFan hwFan = hwmonInterface->getFans()[sourceIndex];
+            fanInfo["label"] = hwFan.label;
+            fanInfo["minRPM"] = hwFan.minRPM;
+            fanInfo["maxRPM"] = hwFan.maxRPM;
+            fanInfo["type"] = "HWMon";
+        }
+        fan["info"] = fanInfo;
+
+        fans.append(fan);
+        settings.endGroup();
+    }
+    root["fans"] = fans;
+
+    settings.endGroup();
+    settings.endGroup();
+
+    // Generate filename
+    QString defaultFileName = presetName;
+    defaultFileName.remove(QRegularExpression("[^a-zA-Z0-9_-]"));
+    defaultFileName += ".json";
+
+    QString filePath = QFileDialog::getSaveFileName(this, "Export Preset",
+                                                     defaultFileName,
+                                                     "JSON Files (*.json)");
+
+    if (filePath.isEmpty()) {
+        return;
+    }
+
+    // Write to file
+    QJsonDocument doc(root);
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        QMessageBox::critical(this, "Export Error",
+                            QString("Cannot write to file:\n%1").arg(filePath));
+        return;
+    }
+
+    file.write(doc.toJson(QJsonDocument::Indented));
+    file.close();
+
+    statusBar()->showMessage(QString("Preset '%1' exported to %2").arg(presetName).arg(filePath), 5000);
+    qDebug() << "Preset exported:" << presetName << "->" << filePath;
+}
+
+void MainWindow::importPreset()
+{
+    QString filePath = QFileDialog::getOpenFileName(this, "Import Preset",
+                                                     QString(),
+                                                     "JSON Files (*.json)");
+
+    if (filePath.isEmpty()) {
+        return;
+    }
+
+    // Read and parse JSON file
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::critical(this, "Import Error",
+                            QString("Cannot read file:\n%1").arg(filePath));
+        return;
+    }
+
+    QByteArray data = file.readAll();
+    file.close();
+
+    QJsonParseError parseError;
+    QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
+
+    if (parseError.error != QJsonParseError::NoError) {
+        QMessageBox::critical(this, "Import Error",
+                            QString("Invalid JSON file:\n%1\n\nError: %2")
+                            .arg(filePath).arg(parseError.errorString()));
+        return;
+    }
+
+    if (!doc.isObject()) {
+        QMessageBox::critical(this, "Import Error",
+                            "Invalid preset format: root must be an object");
+        return;
+    }
+
+    QJsonObject root = doc.object();
+
+    // Verify format
+    QString format = root.value("format").toString();
+    if (format != "macsfancontrol-preset") {
+        QMessageBox::warning(this, "Import Warning",
+                           QString("Unknown preset format: %1\nAttempting to import anyway...").arg(format));
+    }
+
+    QString presetName = root.value("presetName").toString();
+    int fanCount = root.value("fanCount").toInt();
+
+    if (presetName.isEmpty()) {
+        QMessageBox::critical(this, "Import Error",
+                            "Preset name is missing");
+        return;
+    }
+
+    // Check fan count compatibility
+    if (fanCount != fanWidgets.size()) {
+        QMessageBox::StandardButton reply = QMessageBox::question(this, "Fan Count Mismatch",
+                                                                  QString("This preset was created for %1 fans, "
+                                                                          "but your system has %2 fans.\n\n"
+                                                                          "Continue anyway?")
+                                                                  .arg(fanCount).arg(fanWidgets.size()),
+                                                                  QMessageBox::Yes | QMessageBox::No);
+        if (reply != QMessageBox::Yes) {
+            return;
+        }
+    }
+
+    // Import as a new preset (allow user to rename)
+    bool ok;
+    QString saveName = QInputDialog::getText(this, "Import Preset",
+                                             "Save as preset name:",
+                                             QLineEdit::Normal,
+                                             presetName, &ok);
+
+    if (!ok || saveName.isEmpty()) {
+        return;
+    }
+
+    // Save to settings
+    QJsonArray fans = root.value("fans").toArray();
+    QSettings settings("macsfancontrol", "macsfancontrol-qt");
+    settings.beginGroup("Presets");
+    settings.beginGroup(saveName);
+    settings.setValue("fanCount", qMin(fans.size(), fanWidgets.size()));
+
+    for (int i = 0; i < qMin(fans.size(), fanWidgets.size()); i++) {
+        QJsonObject fan = fans.at(i).toObject();
+        settings.beginGroup(QString("Fan%1").arg(i));
+        settings.setValue("mode", fan.value("mode").toInt(MODE_AUTO));
+        settings.setValue("targetRPM", fan.value("targetRPM").toInt(0));
+        settings.setValue("sensorIndex", fan.value("sensorIndex").toInt(-1));
+        settings.setValue("minTemp", fan.value("minTemp").toInt(0));
+        settings.setValue("maxTemp", fan.value("maxTemp").toInt(0));
+        settings.endGroup();
+    }
+
+    settings.endGroup();
+    settings.endGroup();
+
+    statusBar()->showMessage(QString("Preset imported as '%1'").arg(saveName), 5000);
+    qDebug() << "Preset imported:" << saveName << "<-" << filePath;
 }

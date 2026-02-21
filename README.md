@@ -38,6 +38,8 @@ sensors
 
 ## Building
 
+### On Linux
+
 ```bash
 # Navigate to project directory
 cd macsfancontrol-qt
@@ -51,6 +53,20 @@ make
 # The executable will be created in the current directory
 ls -l macsfancontrol
 ```
+
+### On macOS (using Docker)
+
+Since this application requires Linux kernel interfaces (applesmc, hwmon), it cannot run natively on macOS. Use Docker to build and test:
+
+```bash
+# Build the Docker image
+docker build -t macsfancontrol .
+
+# The build succeeds if qmake and make complete without errors
+# Note: The app cannot actually run in Docker without Mac hardware
+```
+
+The Docker build verifies the code compiles correctly with Qt5 on Ubuntu 22.04.
 
 ## Installation
 
