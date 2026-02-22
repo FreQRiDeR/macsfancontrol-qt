@@ -418,11 +418,16 @@ void MainWindow::copyDebugLogToClipboard()
     // SMC temperatures (live read)
     lines << "";
     lines << "--- SMC Temperatures ---";
-    for (const TempSensor& sensor : smcInterface->getTemperatures()) {
-        lines << QString("  %1: %2 °C  (%3)")
-                     .arg(sensor.label, -6)
-                     .arg(sensor.temperature / 1000.0, 5, 'f', 1)
-                     .arg(sensor.sysfsPath);
+    {
+        const QString macModel = smcInterface->getMacModel();
+        for (const TempSensor& sensor : smcInterface->getTemperatures()) {
+            QString description = SensorDescriptions::getDescription(sensor.label, macModel);
+            QString nameField = QString("%1 (%2)").arg(sensor.label, -6).arg(description);
+            lines << QString("  %1: %2 °C  (%3)")
+                         .arg(nameField, -36)
+                         .arg(sensor.temperature / 1000.0, 5, 'f', 1)
+                         .arg(sensor.sysfsPath);
+        }
     }
 
     // HWMon temperatures (live read)
