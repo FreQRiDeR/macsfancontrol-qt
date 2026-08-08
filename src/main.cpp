@@ -38,6 +38,26 @@ int main(int argc, char *argv[])
 
     QCoreApplication::setAttribute(Qt::AA_Use96Dpi, true);
 
+    QCommandLineParser parser;
+    parser.setApplicationDescription("Mac Fan Control");
+    parser.addHelpOption();
+    parser.addVersionOption();
+    parser.addOption({"daemon", "Run without showing the GUI"});
+    parser.addOption({"preset", "Load a saved preset on startup", "preset"});
+
+    QStringList arguments;
+    for (int i = 0; i < argc; ++i) {
+        arguments << QString::fromLocal8Bit(argv[i]);
+    }
+    parser.process(arguments);
+
+    bool daemonMode = parser.isSet("daemon");
+    QString presetName = parser.value("preset");
+
+    if (daemonMode) {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+    }
+
     QApplication app(argc, argv);
 
     // Set application information
@@ -45,19 +65,7 @@ int main(int argc, char *argv[])
     app.setApplicationVersion("1.0");
     app.setOrganizationName("macsfancontrol-qt");
 
-    QCommandLineParser parser;
-    parser.setApplicationDescription("Mac Fan Control");
-    parser.addHelpOption();
-    parser.addVersionOption();
-    parser.addOption({"daemon", "Run without showing the GUI"});
-    parser.addOption({"preset", "Load a saved preset on startup", "preset"});
-    parser.process(QCoreApplication::arguments());
-
-    bool daemonMode = parser.isSet("daemon");
-    QString presetName = parser.value("preset");
-
     if (daemonMode) {
-        qputenv("QT_QPA_PLATFORM", "offscreen");
         if (geteuid() != 0) {
             qWarning() << "Daemon mode requires root privileges";
             return 1;
