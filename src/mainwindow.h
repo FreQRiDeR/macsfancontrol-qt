@@ -37,6 +37,9 @@ private slots:
     void copyDebugLogToClipboard();
     void onTemperatureUnitChanged(bool useFahrenheit);
 
+public:
+    bool loadPresetByName(const QString& presetName);
+
 private:
     SMCInterface *smcInterface;
     HWMonInterface *hwmonInterface;
@@ -64,9 +67,12 @@ private:
     // Settings management
     void saveSettings();
     void loadSettings();
-    void savePresetToSettings(const QString& presetName);
-    void loadPresetFromSettings(const QString& presetName);
+    void savePresetToSettings(const QString& presetName, bool launchAtBoot);
+    bool loadPresetFromSettings(const QString& presetName);
     void applyFanSettings(int fanIndex, FanMode mode, int targetRPM, int sensorIndex, int minTemp, int maxTemp);
+    bool installBootPresetService(const QString& presetName);
+    void writeBootPresetConfig(const QString& presetName);
+    bool promptForPresetLaunchAtBoot(const QString& presetName, bool currentValue);
 };
 
 #endif // MAINWINDOW_H

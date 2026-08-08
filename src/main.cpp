@@ -1,6 +1,8 @@
 #include <QApplication>
 #include <QMessageBox>
 #include <QStringList>
+#include <QCommandLineParser>
+#include <QDebug>
 #include "mainwindow.h"
 #include <unistd.h>
 #include <cstdio>
@@ -34,12 +36,40 @@ int main(int argc, char *argv[])
 {
     qInstallMessageHandler(debugMessageHandler);
 
+    QCoreApplication::setAttribute(Qt::AA_Use96Dpi, true);
+
     QApplication app(argc, argv);
 
     // Set application information
     app.setApplicationName("Mac Fan Control");
     app.setApplicationVersion("1.0");
     app.setOrganizationName("macsfancontrol-qt");
+
+    QCommandLineParser parser;
+    parser.setApplicationDescription("Mac Fan Control");
+    parser.addHelpOption();
+    parser.addVersionOption();
+    parser.addOption({"daemon", "Run without showing the GUI"});
+    parser.addOption({"preset", "Load a saved preset on startup", "preset"});
+    parser.process(QCoreApplication::arguments());
+
+    bool daemonMode = parser.isSet("daemon");
+    QString presetName = parser.value("preset");
+
+    if (daemonMode) {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+        if (geteuid() != 0) {
+            qWarning() << "Daemon mode requires root privileges";
+            return 1;
+        }
+
+        MainWindow window;
+        window.hide();
+        if (!presetName.isEmpty()) {
+            window.loadPresetByName(presetName);
+        }
+        return app.exec();
+    }
 
     // Check for root privileges (effective user ID)
     if (geteuid() != 0) {
@@ -62,6 +92,9 @@ int main(int argc, char *argv[])
     }
 
     MainWindow window;
+    if (!presetName.isEmpty()) {
+        window.loadPresetByName(presetName);
+    }
     window.show();
 
     return app.exec();
