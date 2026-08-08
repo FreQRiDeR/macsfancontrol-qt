@@ -26,6 +26,8 @@ public:
     void updateFanInfo(const FanInfo& info);
     void setSensorList(const QVector<TempSensor>& sensors);
     void updateSensorBasedSpeed(int currentTemp);
+    void setUseFahrenheit(bool useFahrenheit);
+    bool isUsingFahrenheit() const { return useFahrenheit; }
     void setMacModel(const QString& model) { macModel = model; }
 
     // Settings getters
@@ -76,12 +78,15 @@ private:
     QSpinBox *spinMinTemp;
     QSpinBox *spinMaxTemp;
     QLabel *labelCurrentTemp;
+    bool useFahrenheit;
 
     void setupUI(const FanInfo& fanInfo);
     void updateModeIndicator(FanMode mode);
     void updateControlsVisibility();
     int calculateFanSpeed(int currentTemp, int minTemp, int maxTemp);
     QString getSensorDescription(const QString& label);
+    QString formatTemperature(int millidegrees) const;
+    int convertTemp(int temp, bool fromFahrenheit, bool toFahrenheit) const;
 };
 
 #endif // FANCONTROLWIDGET_H

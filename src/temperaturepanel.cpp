@@ -1,20 +1,34 @@
 #include "temperaturepanel.h"
 #include "sensordescriptions.h"
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QFrame>
 #include <QScrollBar>
 
 TemperaturePanel::TemperaturePanel(QWidget *parent)
-    : QWidget(parent)
+    : QWidget(parent),
+      unitToggle(nullptr),
+      useFahrenheit(false)
 {
     // Create main layout
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(0, 0, 0, 0);
 
-    // Create title
+    // Header with title and unit toggle
+    QWidget *headerWidget = new QWidget(this);
+    QHBoxLayout *headerLayout = new QHBoxLayout(headerWidget);
+    headerLayout->setContentsMargins(0, 0, 0, 0);
+
     QLabel *title = new QLabel("<b>Temperature Sensors</b>", this);
     title->setStyleSheet("font-size: 14px; padding: 10px;");
-    mainLayout->addWidget(title);
+    headerLayout->addWidget(title);
+
+    unitToggle = new QCheckBox("°F", this);
+    unitToggle->setToolTip("Display temperatures in Fahrenheit");
+    connect(unitToggle, &QCheckBox::toggled, this, &TemperaturePanel::onUnitToggleChanged);
+    headerLayout->addWidget(unitToggle, 0, Qt::AlignRight);
+
+    mainLayout->addWidget(headerWidget);
 
     // Create scroll area
     scrollArea = new QScrollArea(this);
@@ -35,6 +49,7 @@ TemperaturePanel::TemperaturePanel(QWidget *parent)
 
 void TemperaturePanel::updateTemperatures(const QVector<TempSensor>& sensors)
 {
+    lastTemps = sensors;
     int row = 0;
     int col = 0;
     const int maxColumns = 1;  // Display in 1 column for better scrolling
@@ -87,6 +102,10 @@ void TemperaturePanel::updateTemperatures(const QVector<TempSensor>& sensors)
 QString TemperaturePanel::formatTemperature(int millidegrees)
 {
     double celsius = millidegrees / 1000.0;
+    if (useFahrenheit) {
+        double fahrenheit = celsius * 9.0 / 5.0 + 32.0;
+        return QString("%1°F").arg(fahrenheit, 0, 'f', 1);
+    }
     return QString("%1°C").arg(celsius, 0, 'f', 1);
 }
 
@@ -101,5 +120,26 @@ QColor TemperaturePanel::getTemperatureColor(double celsius)
         return QColor("#3498DB");  // Blue - moderate
     } else {
         return QColor("#27AE60");  // Green - cool
+    }
+}
+
+void TemperaturePanel::onUnitToggleChanged(bool enabled)
+{
+    setUseFahrenheit(enabled);
+    emit unitChanged(enabled);
+}
+
+void TemperaturePanel::setUseFahrenheit(bool enable)
+{
+    if (useFahrenheit == enable)
+        return;
+
+    useFahrenheit = enable;
+    if (unitToggle && unitToggle->isChecked() != enable) {
+        unitToggle->setChecked(enable);
+    }
+
+    if (!lastTemps.isEmpty()) {
+        updateTemperatures(lastTemps);
     }
 }

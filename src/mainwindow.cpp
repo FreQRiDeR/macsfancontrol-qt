@@ -297,6 +297,7 @@ void MainWindow::connectSignals()
     // Connect SMC interface signals
     connect(smcInterface, &SMCInterface::error, this, &MainWindow::showError);
     connect(smcInterface, &SMCInterface::warning, this, &MainWindow::showWarning);
+    connect(tempPanel, &TemperaturePanel::unitChanged, this, &MainWindow::onTemperatureUnitChanged);
 }
 
 void MainWindow::updateSensorData()
@@ -355,6 +356,16 @@ void MainWindow::updateSensorData()
 
     // Update status bar
     statusBar()->showMessage(QString("Last update: %1").arg(QTime::currentTime().toString("hh:mm:ss")));
+}
+
+void MainWindow::onTemperatureUnitChanged(bool useFahrenheit)
+{
+    for (FanControlWidget* fanWidget : fanWidgets) {
+        fanWidget->setUseFahrenheit(useFahrenheit);
+    }
+
+    // Refresh sensor labels so the sensor dropdown unit labels update
+    updateSensorListInFanWidgets();
 }
 
 void MainWindow::showError(const QString& message)
@@ -671,6 +682,7 @@ void MainWindow::saveSettings()
 
     settings.beginGroup("LastSession");
     settings.setValue("fanCount", fanWidgets.size());
+    settings.setValue("useFahrenheit", tempPanel->isUsingFahrenheit());
 
     for (int i = 0; i < fanWidgets.size(); i++) {
         settings.beginGroup(QString("Fan%1").arg(i));
@@ -692,12 +704,16 @@ void MainWindow::loadSettings()
 
     settings.beginGroup("LastSession");
     int savedFanCount = settings.value("fanCount", 0).toInt();
+    bool savedUseFahrenheit = settings.value("useFahrenheit", false).toBool();
 
     if (savedFanCount != fanWidgets.size()) {
         qDebug() << "Fan count mismatch, skipping settings load";
         settings.endGroup();
         return;
     }
+
+    tempPanel->setUseFahrenheit(savedUseFahrenheit);
+    onTemperatureUnitChanged(savedUseFahrenheit);
 
     for (int i = 0; i < fanWidgets.size(); i++) {
         settings.beginGroup(QString("Fan%1").arg(i));

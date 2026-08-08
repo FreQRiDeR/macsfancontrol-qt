@@ -12,7 +12,8 @@ FanControlWidget::FanControlWidget(const FanInfo& fanInfo, QWidget *parent)
       minRPM(fanInfo.minRPM),
       maxRPM(fanInfo.maxRPM),
       currentMode(MODE_AUTO),
-      selectedSensorIndex(-1)
+      selectedSensorIndex(-1),
+      useFahrenheit(false)
 {
     setupUI(fanInfo);
 }
@@ -126,7 +127,7 @@ void FanControlWidget::setupUI(const FanInfo& fanInfo)
     // Current temperature display
     QHBoxLayout *currentTempRow = new QHBoxLayout();
     currentTempRow->addWidget(new QLabel("Current Temp:", this));
-    labelCurrentTemp = new QLabel("--°C", this);
+    labelCurrentTemp = new QLabel(QString("--%1").arg(useFahrenheit ? "°F" : "°C"), this);
     labelCurrentTemp->setStyleSheet("font-weight: bold; color: #F39C12;");
     currentTempRow->addWidget(labelCurrentTemp);
     currentTempRow->addStretch();
@@ -211,10 +212,10 @@ void FanControlWidget::setSensorList(const QVector<TempSensor>& sensors)
 
     for (const TempSensor& sensor : sensors) {
         QString description = getSensorDescription(sensor.label);
-        QString displayText = QString("%1 - %2 (%3°C)")
+        QString displayText = QString("%1 - %2 (%3)")
             .arg(sensor.label)
             .arg(description)
-            .arg(sensor.temperature / 1000.0, 0, 'f', 1);
+            .arg(formatTemperature(sensor.temperature));
         comboSensor->addItem(displayText, sensor.index);
     }
 
@@ -239,10 +240,15 @@ void FanControlWidget::updateSensorBasedSpeed(int currentTemp)
     }
 
     // Update current temperature display
-    labelCurrentTemp->setText(QString("%1°C").arg(currentTemp / 1000.0, 0, 'f', 1));
+    labelCurrentTemp->setText(formatTemperature(currentTemp));
 
-    // Calculate and emit new fan speed
-    int targetSpeed = calculateFanSpeed(currentTemp / 1000, spinMinTemp->value(), spinMaxTemp->value());
+    // Convert current temp to the unit used by threshold controls
+    int currentTempUnits = currentTemp / 1000;
+    if (useFahrenheit) {
+        currentTempUnits = qRound(currentTempUnits * 9.0 / 5.0 + 32.0);
+    }
+
+    int targetSpeed = calculateFanSpeed(currentTempUnits, spinMinTemp->value(), spinMaxTemp->value());
     sliderRPM->setValue(targetSpeed);
     labelTargetRPM->setText(QString("%1 RPM").arg(targetSpeed));
     emit targetRPMChanged(fanIndex, targetSpeed);
@@ -297,6 +303,40 @@ void FanControlWidget::onSensorSettingsChanged()
                                  spinMinTemp->value(), spinMaxTemp->value());
 }
 
+static int celsiusToFahrenheit(int celsius)
+{
+    return qRound(celsius * 9.0 / 5.0 + 32.0);
+}
+
+static int fahrenheitToCelsius(int fahrenheit)
+{
+    return qRound((fahrenheit - 32.0) * 5.0 / 9.0);
+}
+
+void FanControlWidget::setUseFahrenheit(bool useFahrenheit)
+{
+    if (this->useFahrenheit == useFahrenheit)
+        return;
+
+    this->useFahrenheit = useFahrenheit;
+
+    // Convert existing threshold values when switching units
+    int minValue = spinMinTemp->value();
+    int maxValue = spinMaxTemp->value();
+
+    if (useFahrenheit) {
+        spinMinTemp->setValue(celsiusToFahrenheit(minValue));
+        spinMaxTemp->setValue(celsiusToFahrenheit(maxValue));
+    } else {
+        spinMinTemp->setValue(fahrenheitToCelsius(minValue));
+        spinMaxTemp->setValue(fahrenheitToCelsius(maxValue));
+    }
+
+    spinMinTemp->setSuffix(useFahrenheit ? "°F" : "°C");
+    spinMaxTemp->setSuffix(useFahrenheit ? "°F" : "°C");
+    labelCurrentTemp->setText(QString("--%1").arg(useFahrenheit ? "°F" : "°C"));
+}
+
 void FanControlWidget::updateControlsVisibility()
 {
     // Show/hide controls based on mode
@@ -345,6 +385,16 @@ int FanControlWidget::calculateFanSpeed(int currentTemp, int minTemp, int maxTem
     int targetRPM = minRPM + static_cast<int>(tempRatio * (maxRPM - minRPM));
 
     return targetRPM;
+}
+
+QString FanControlWidget::formatTemperature(int millidegrees) const
+{
+    double celsius = millidegrees / 1000.0;
+    if (useFahrenheit) {
+        double fahrenheit = celsius * 9.0 / 5.0 + 32.0;
+        return QString("%1°F").arg(fahrenheit, 0, 'f', 1);
+    }
+    return QString("%1°C").arg(celsius, 0, 'f', 1);
 }
 
 void FanControlWidget::setMode(FanMode mode)

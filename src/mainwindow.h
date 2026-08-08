@@ -35,6 +35,7 @@ private slots:
     void exportPreset();
     void importPreset();
     void copyDebugLogToClipboard();
+    void onTemperatureUnitChanged(bool useFahrenheit);
 
 private:
     SMCInterface *smcInterface;
