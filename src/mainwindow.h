@@ -68,6 +68,7 @@ private:
     void saveSettings();
     void loadSettings();
     void savePresetToSettings(const QString& presetName, bool launchAtBoot);
+    void setPresetLaunchAtBoot(const QString& presetName, bool launchAtBoot);
     bool loadPresetFromSettings(const QString& presetName);
     void applyFanSettings(int fanIndex, FanMode mode, int targetRPM, int sensorIndex, int minTemp, int maxTemp);
     bool installBootPresetService(const QString& presetName);

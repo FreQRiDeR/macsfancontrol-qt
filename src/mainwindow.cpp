@@ -740,8 +740,33 @@ void MainWindow::loadSettings()
     qDebug() << "Settings loaded";
 }
 
+void MainWindow::setPresetLaunchAtBoot(const QString& presetName, bool launchAtBoot)
+{
+    QSettings settings("macsfancontrol", "macsfancontrol-qt");
+    settings.beginGroup("Presets");
+
+    QStringList presets = settings.childGroups();
+    for (const QString& otherPreset : presets) {
+        if (otherPreset == presetName) {
+            continue;
+        }
+
+        settings.beginGroup(otherPreset);
+        settings.setValue("launchAtBoot", false);
+        settings.endGroup();
+    }
+
+    settings.beginGroup(presetName);
+    settings.setValue("launchAtBoot", launchAtBoot);
+    settings.endGroup();
+
+    settings.endGroup();
+}
+
 void MainWindow::savePresetToSettings(const QString& presetName, bool launchAtBoot)
 {
+    setPresetLaunchAtBoot(presetName, launchAtBoot);
+
     QSettings settings("macsfancontrol", "macsfancontrol-qt");
 
     settings.beginGroup("Presets");
@@ -992,14 +1017,7 @@ void MainWindow::loadPreset()
         settings.endGroup();
 
         bool enableBoot = promptForPresetLaunchAtBoot(presetName, launchAtBoot);
-        if (enableBoot) {
-            QSettings presetSettings("macsfancontrol", "macsfancontrol-qt");
-            presetSettings.beginGroup("Presets");
-            presetSettings.beginGroup(presetName);
-            presetSettings.setValue("launchAtBoot", true);
-            presetSettings.endGroup();
-            presetSettings.endGroup();
-        }
+        setPresetLaunchAtBoot(presetName, enableBoot);
 
         if (loadPresetByName(presetName)) {
             statusBar()->showMessage(QString("Preset '%1' loaded").arg(presetName), 3000);
