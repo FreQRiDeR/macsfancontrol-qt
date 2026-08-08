@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "sensordescriptions.h"
+#include <unistd.h>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QScrollArea>
@@ -30,6 +31,25 @@
 #include <QCheckBox>
 #include <QLineEdit>
 #include <QVBoxLayout>
+
+static QString findPrivilegeElevator()
+{
+    QString elevator = QStandardPaths::findExecutable("pkexec");
+    if (!elevator.isEmpty()) {
+        return elevator;
+    }
+    return QString();
+}
+
+static bool launchElevated(const QStringList &args)
+{
+    QString elevator = findPrivilegeElevator();
+    if (elevator.isEmpty()) {
+        return false;
+    }
+
+    return QProcess::startDetached(elevator, args);
+}
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
@@ -837,6 +857,23 @@ bool MainWindow::loadPresetByName(const QString& presetName)
 
 bool MainWindow::installBootPresetService(const QString& presetName)
 {
+    if (geteuid() != 0) {
+        QString program = QCoreApplication::applicationFilePath();
+        QStringList args;
+        args << program << "--install-boot-service" << presetName;
+        if (launchElevated(args)) {
+            QMessageBox::information(this, "Administrator Authentication",
+                                     "A privileged helper has been launched to install the boot service. "
+                                     "Please authenticate when prompted.");
+            return true;
+        }
+
+        QMessageBox::critical(this, "Elevation Failed",
+                              "Unable to request administrator privileges to install the boot service. "
+                              "Please run the app as root or install pkexec.");
+        return false;
+    }
+
     writeBootPresetConfig(presetName);
 
     QString servicePath = "/etc/systemd/system/macsfancontrol-boot.service";
@@ -986,6 +1023,9 @@ void MainWindow::savePreset()
 
     bool enableBoot = promptForPresetLaunchAtBoot(presetName, launchAtBoot);
     savePresetToSettings(presetName, enableBoot);
+    if (enableBoot) {
+        installBootPresetService(presetName);
+    }
     statusBar()->showMessage(QString("Preset '%1' saved").arg(presetName), 3000);
 }
 
@@ -1018,6 +1058,9 @@ void MainWindow::loadPreset()
 
         bool enableBoot = promptForPresetLaunchAtBoot(presetName, launchAtBoot);
         setPresetLaunchAtBoot(presetName, enableBoot);
+        if (enableBoot) {
+            installBootPresetService(presetName);
+        }
 
         if (loadPresetByName(presetName)) {
             statusBar()->showMessage(QString("Preset '%1' loaded").arg(presetName), 3000);

@@ -1,5 +1,8 @@
 #include <QApplication>
 #include <QMessageBox>
+#include <QProcess>
+#include <QPushButton>
+#include <QStandardPaths>
 #include <QStringList>
 #include <QCommandLineParser>
 #include <QDebug>
@@ -9,6 +12,53 @@
 
 // Captured debug log messages (appended by the message handler below)
 static QStringList g_debugLog;
+
+static QString findPrivilegeElevator()
+{
+    QString elevator = QStandardPaths::findExecutable("pkexec");
+    if (!elevator.isEmpty()) {
+        return elevator;
+    }
+    return QString();
+}
+
+static bool launchElevated(const QStringList &args)
+{
+    QString elevator = findPrivilegeElevator();
+    if (elevator.isEmpty()) {
+        return false;
+    }
+
+    return QProcess::startDetached(elevator, args);
+}
+
+static bool installBootServiceAsRoot(const QString &presetName, QString &error)
+{
+    if (geteuid() == 0) {
+        MainWindow window;
+        if (!window.installBootPresetService(presetName)) {
+            error = "Failed to install boot service.";
+            return false;
+        }
+        return true;
+    }
+
+    QString elevator = findPrivilegeElevator();
+    if (elevator.isEmpty()) {
+        error = "Administrator authorization is required, but no pkexec binary was found.";
+        return false;
+    }
+
+    QString program = QCoreApplication::applicationFilePath();
+    QStringList args;
+    args << program << "--install-boot-service" << presetName;
+    if (QProcess::startDetached(elevator, args)) {
+        return true;
+    }
+
+    error = "Failed to launch pkexec to request administrator privileges.";
+    return false;
+}
 
 static void debugMessageHandler(QtMsgType type, const QMessageLogContext& /*context*/, const QString& msg)
 {
@@ -45,6 +95,12 @@ int main(int argc, char *argv[])
     parser.addOption({"daemon", "Run without showing the GUI"});
     parser.addOption({"preset", "Load a saved preset on startup", "preset"});
 
+    QCommandLineOption installBootServiceOption("install-boot-service",
+                                                "Install boot service for preset",
+                                                "preset");
+    installBootServiceOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    parser.addOption(installBootServiceOption);
+
     QStringList arguments;
     for (int i = 0; i < argc; ++i) {
         arguments << QString::fromLocal8Bit(argv[i]);
@@ -65,6 +121,18 @@ int main(int argc, char *argv[])
     app.setApplicationVersion("1.0");
     app.setOrganizationName("macsfancontrol-qt");
 
+    if (parser.isSet(installBootServiceOption)) {
+        QString presetName = parser.value(installBootServiceOption);
+        QString error;
+        if (!installBootServiceAsRoot(presetName, error)) {
+            QMessageBox::critical(nullptr, "Boot Service Install Failed", error);
+            return 1;
+        }
+        QMessageBox::information(nullptr, "Boot Service Installed",
+                                 "The boot service was installed successfully.");
+        return 0;
+    }
+
     if (daemonMode) {
         if (geteuid() != 0) {
             qWarning() << "Daemon mode requires root privileges";
@@ -79,24 +147,32 @@ int main(int argc, char *argv[])
         return app.exec();
     }
 
-    // Check for root privileges (effective user ID)
     if (geteuid() != 0) {
         QMessageBox msgBox;
         msgBox.setIcon(QMessageBox::Warning);
         msgBox.setWindowTitle("Permission Required");
         msgBox.setText("This application requires root privileges to control fans.");
-        msgBox.setInformativeText("You can run in read-only mode to monitor fans, "
-                                  "or restart with root privileges to enable fan control.\n\n"
-                                  "To run with root access:\n"
-                                  "sudo macsfancontrol");
-        msgBox.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
-        msgBox.setDefaultButton(QMessageBox::Ok);
+        msgBox.setInformativeText("You can continue in read-only mode, or authenticate to run as administrator.");
+        QPushButton *runAsAdmin = msgBox.addButton("Run as Administrator", QMessageBox::AcceptRole);
+        msgBox.addButton("Continue Read-Only", QMessageBox::DestructiveRole);
+        QPushButton *cancel = msgBox.addButton(QMessageBox::Cancel);
+        msgBox.setDefaultButton(runAsAdmin);
 
-        int ret = msgBox.exec();
-        if (ret == QMessageBox::Cancel) {
+        msgBox.exec();
+        if (msgBox.clickedButton() == cancel) {
             return 0;
         }
-        // If OK, continue in read-only mode
+        if (msgBox.clickedButton() == runAsAdmin) {
+            QStringList elevatedArgs = arguments.mid(1);
+            if (launchElevated(elevatedArgs)) {
+                return 0;
+            }
+            QMessageBox::critical(nullptr, "Elevation Failed",
+                                  "Unable to request administrator privileges. "
+                                  "Please install a policy agent such as polkit or run the app with sudo.");
+            return 1;
+        }
+        // Continue in read-only mode
     }
 
     MainWindow window;
