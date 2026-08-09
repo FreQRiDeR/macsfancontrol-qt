@@ -62,8 +62,7 @@ make
 # The executable will be created in the current directory
 ls -l macsfancontrol
 
-# Create the .deb installer without sudo
-./build_deb.sh
+# Optionally, Create the .deb installer.
 ```
 
 ### On macOS (using Docker)
