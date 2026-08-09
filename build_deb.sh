@@ -51,7 +51,10 @@ cp "$ROOT_DIR/$PKG_NAME.png" "$PIXMAP_DIR/$PKG_NAME.png"
 cat > "$BIN_DIR/$PKG_NAME-boot" <<'EOF'
 #!/bin/sh
 set -eu
-exec /usr/bin/macsfancontrol --daemon --preset "${MACSFANCONTROL_BOOT_PRESET:-default}"
+if [ -n "${MACSFANCONTROL_BOOT_PRESET:-}" ]; then
+  exec /usr/bin/macsfancontrol --daemon --preset "$MACSFANCONTROL_BOOT_PRESET"
+fi
+exec /usr/bin/macsfancontrol --daemon
 EOF
 chmod 755 "$BIN_DIR/$PKG_NAME-boot"
 
@@ -68,6 +71,17 @@ EOF
 
 cp "$ROOT_DIR/$PKG_NAME.service" "$SYSTEMD_DIR/$PKG_NAME.service"
 cp "$ROOT_DIR/$PKG_NAME.rules" "$POLKIT_DIR/50-$PKG_NAME.rules"
+
+cat > "$PKG_DIR/DEBIAN/postinst" <<'EOF'
+#!/bin/sh
+set -e
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl enable macsfancontrol.service >/dev/null 2>&1 || true
+  systemctl start macsfancontrol.service >/dev/null 2>&1 || true
+fi
+EOF
+chmod 755 "$PKG_DIR/DEBIAN/postinst"
 
 cat > "$DOC_DIR/copyright" <<EOF
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
