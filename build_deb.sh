@@ -2,12 +2,33 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_ROOT="$ROOT_DIR/build/deb"
+DEFAULT_BUILD_ROOT="$ROOT_DIR/build/deb"
+OUTPUT_ROOT="$ROOT_DIR/build"
 PKG_NAME="macsfancontrol"
 VERSION="1.0"
 ARCH="$(dpkg --print-architecture)"
+
+BUILD_ROOT="$DEFAULT_BUILD_ROOT"
+if [ -d "$DEFAULT_BUILD_ROOT" ]; then
+  if [ ! -w "$DEFAULT_BUILD_ROOT" ]; then
+    echo "Warning: $DEFAULT_BUILD_ROOT is not writable; using temporary staging area." >&2
+    BUILD_ROOT="$(mktemp -d /tmp/macsfancontrol-build.XXXXXX)"
+  fi
+else
+  BUILD_PARENT="$(dirname "$DEFAULT_BUILD_ROOT")"
+  if [ ! -w "$BUILD_PARENT" ]; then
+    echo "Warning: $BUILD_PARENT is not writable; using temporary staging area." >&2
+    BUILD_ROOT="$(mktemp -d /tmp/macsfancontrol-build.XXXXXX)"
+  fi
+fi
+
+if [ -d "$OUTPUT_ROOT" ] && [ ! -w "$OUTPUT_ROOT" ]; then
+  echo "Warning: $OUTPUT_ROOT is not writable; writing package to $ROOT_DIR instead." >&2
+  OUTPUT_ROOT="$ROOT_DIR"
+fi
+
 PKG_DIR="$BUILD_ROOT/${PKG_NAME}_${VERSION}_${ARCH}"
-DEB_FILE="$ROOT_DIR/build/${PKG_NAME}_${VERSION}_${ARCH}.deb"
+DEB_FILE="$OUTPUT_ROOT/${PKG_NAME}_${VERSION}_${ARCH}.deb"
 INSTALL_PREFIX="$PKG_DIR/usr"
 BIN_DIR="$INSTALL_PREFIX/bin"
 APP_DIR="$INSTALL_PREFIX/share/applications"
@@ -16,14 +37,25 @@ DOC_DIR="$INSTALL_PREFIX/share/doc/$PKG_NAME"
 SYSTEMD_DIR="$INSTALL_PREFIX/lib/systemd/system"
 POLKIT_DIR="$INSTALL_PREFIX/share/polkit-1/rules.d"
 
+if [ -d "$PKG_DIR" ]; then
+  echo "Cleaning existing staging directory: $PKG_DIR"
+  rm -rf "$PKG_DIR"
+fi
+if [ -f "$DEB_FILE" ]; then
+  echo "Removing old package file: $DEB_FILE"
+  rm -f "$DEB_FILE"
+fi
+
 mkdir -p "$BIN_DIR" "$APP_DIR" "$PIXMAP_DIR" "$DOC_DIR" "$SYSTEMD_DIR" "$POLKIT_DIR" "$PKG_DIR/DEBIAN"
 
 cd "$ROOT_DIR"
-if [ ! -x "./macsfancontrol" ] || [ "./macsfancontrol" -ot src/main.cpp ]; then
-  echo "Building macsfancontrol binary..."
-  qmake
-  make
+if [ -f Makefile ]; then
+  echo "Cleaning previous build artifacts..."
+  make clean >/dev/null 2>&1 || true
 fi
+echo "Building macsfancontrol binary..."
+qmake
+make
 
 cp "./macsfancontrol" "$BIN_DIR/$PKG_NAME"
 chmod 755 "$BIN_DIR/$PKG_NAME"
@@ -102,7 +134,10 @@ chmod 644 "$POLKIT_DIR/50-$PKG_NAME.rules"
 
 chmod 644 "$DOC_DIR/copyright"
 
-mkdir -p "$ROOT_DIR/build"
-dpkg-deb --build "$PKG_DIR" "$DEB_FILE"
+if [ ! -d "$OUTPUT_ROOT" ]; then
+  mkdir -p "$OUTPUT_ROOT"
+fi
+
+dpkg-deb --build --root-owner-group "$PKG_DIR" "$DEB_FILE"
 
 echo "Created Debian package: $DEB_FILE"

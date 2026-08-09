@@ -7,12 +7,15 @@
 #include <QMenuBar>
 #include <QMenu>
 #include <QAction>
+#include <QActionGroup>
 #include <QStatusBar>
 #include <QMessageBox>
 #include <QTime>
 #include <QApplication>
 #include <QDebug>
 #include <QLabel>
+#include <QPalette>
+#include <QColor>
 #include <QInputDialog>
 #include <QSettings>
 #include <QStandardPaths>
@@ -81,6 +84,9 @@ MainWindow::MainWindow(QWidget *parent)
                            "You may be able to monitor some fans but not control them.\n"
                            "Run with: sudo macsfancontrol");
     }
+
+    defaultPalette = qApp->palette();
+    defaultStyleSheet = qApp->styleSheet();
 
     setupUI();
     createMenuBar();
@@ -236,6 +242,28 @@ void MainWindow::createMenuBar()
     // File menu
     QMenu *fileMenu = menuBar()->addMenu("&File");
 
+    QMenu *themeMenu = fileMenu->addMenu("&Theme");
+    QActionGroup *themeGroup = new QActionGroup(this);
+    themeGroup->setExclusive(true);
+
+    QAction *lightThemeAction = new QAction("&Light Mode", this);
+    lightThemeAction->setCheckable(true);
+    connect(lightThemeAction, &QAction::triggered, this, &MainWindow::setLightTheme);
+    themeGroup->addAction(lightThemeAction);
+    themeMenu->addAction(lightThemeAction);
+
+    QAction *darkThemeAction = new QAction("&Dark Mode", this);
+    darkThemeAction->setCheckable(true);
+    connect(darkThemeAction, &QAction::triggered, this, &MainWindow::setDarkTheme);
+    themeGroup->addAction(darkThemeAction);
+    themeMenu->addAction(darkThemeAction);
+
+    if (currentTheme == ThemeDark) {
+        darkThemeAction->setChecked(true);
+    } else {
+        lightThemeAction->setChecked(true);
+    }
+
     QAction *exitAction = new QAction("E&xit", this);
     exitAction->setShortcut(QKeySequence::Quit);
     connect(exitAction, &QAction::triggered, this, &QMainWindow::close);
@@ -308,6 +336,59 @@ void MainWindow::connectSignals()
     connect(smcInterface, &SMCInterface::error, this, &MainWindow::showError);
     connect(smcInterface, &SMCInterface::warning, this, &MainWindow::showWarning);
     connect(tempPanel, &TemperaturePanel::unitChanged, this, &MainWindow::onTemperatureUnitChanged);
+}
+
+void MainWindow::setLightTheme()
+{
+    applyTheme(ThemeLight);
+}
+
+void MainWindow::setDarkTheme()
+{
+    applyTheme(ThemeDark);
+}
+
+void MainWindow::applyTheme(ThemeMode theme)
+{
+    currentTheme = theme;
+    if (theme == ThemeDark) {
+        qApp->setStyleSheet(
+            "QWidget { background-color: #2b2b2b; color: #e8e8e8; }"
+            "QMenuBar, QMenu, QStatusBar { background-color: #212121; color: #e8e8e8; }"
+            "QMenu::item:selected { background-color: #3a6ea5; color: #ffffff; }"
+            "QPushButton, QComboBox, QSpinBox, QLineEdit, QTextEdit { background-color: #353535; color: #e8e8e8; border: 1px solid #555555; }"
+            "QToolTip { color: #ffffff; background-color: #2a2a2a; border: 1px solid #ffffff; }"
+        );
+        QPalette darkPalette;
+        darkPalette.setColor(QPalette::Window, QColor(43, 43, 43));
+        darkPalette.setColor(QPalette::WindowText, Qt::white);
+        darkPalette.setColor(QPalette::Base, QColor(35, 35, 35));
+        darkPalette.setColor(QPalette::AlternateBase, QColor(53, 53, 53));
+        darkPalette.setColor(QPalette::ToolTipBase, Qt::white);
+        darkPalette.setColor(QPalette::ToolTipText, Qt::white);
+        darkPalette.setColor(QPalette::Text, Qt::white);
+        darkPalette.setColor(QPalette::Button, QColor(53, 53, 53));
+        darkPalette.setColor(QPalette::ButtonText, Qt::white);
+        darkPalette.setColor(QPalette::BrightText, Qt::red);
+        darkPalette.setColor(QPalette::Link, QColor(42, 130, 218));
+        darkPalette.setColor(QPalette::Highlight, QColor(42, 130, 218));
+        darkPalette.setColor(QPalette::HighlightedText, Qt::white);
+        qApp->setPalette(darkPalette);
+    } else {
+        qApp->setStyleSheet(defaultStyleSheet);
+        qApp->setPalette(defaultPalette);
+    }
+
+    // Force all widgets to refresh after theme change.
+    qApp->style()->unpolish(qApp);
+    qApp->style()->polish(qApp);
+    for (QWidget *widget : QApplication::allWidgets()) {
+        if (widget) {
+            widget->style()->unpolish(widget);
+            widget->style()->polish(widget);
+            widget->update();
+        }
+    }
 }
 
 void MainWindow::updateSensorData()
@@ -693,6 +774,7 @@ void MainWindow::saveSettings()
     settings.beginGroup("LastSession");
     settings.setValue("fanCount", fanWidgets.size());
     settings.setValue("useFahrenheit", tempPanel->isUsingFahrenheit());
+    settings.setValue("theme", currentTheme == ThemeDark ? "dark" : "light");
 
     for (int i = 0; i < fanWidgets.size(); i++) {
         settings.beginGroup(QString("Fan%1").arg(i));
@@ -715,6 +797,13 @@ void MainWindow::loadSettings()
     settings.beginGroup("LastSession");
     int savedFanCount = settings.value("fanCount", 0).toInt();
     bool savedUseFahrenheit = settings.value("useFahrenheit", false).toBool();
+    QString savedTheme = settings.value("theme", "light").toString();
+
+    if (savedTheme == "dark") {
+        applyTheme(ThemeDark);
+    } else {
+        applyTheme(ThemeLight);
+    }
 
     if (savedFanCount != fanWidgets.size()) {
         qDebug() << "Fan count mismatch, skipping settings load";

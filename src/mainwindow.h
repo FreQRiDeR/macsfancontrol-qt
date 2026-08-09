@@ -36,9 +36,17 @@ private slots:
     void importPreset();
     void copyDebugLogToClipboard();
     void onTemperatureUnitChanged(bool useFahrenheit);
+    void setLightTheme();
+    void setDarkTheme();
 
 public:
     bool loadPresetByName(const QString& presetName);
+
+private:
+    enum ThemeMode {
+        ThemeLight,
+        ThemeDark
+    };
     
 
 private:
@@ -49,6 +57,8 @@ private:
     QVector<int> fanSourceIndices;  // Index within the source interface
     TemperaturePanel *tempPanel;
     QTimer *updateTimer;
+    QPalette defaultPalette;
+    QString defaultStyleSheet;
 
     // Sensor-based control settings
     struct SensorBasedSettings {
@@ -58,12 +68,14 @@ private:
         int maxTemp;
     };
     QVector<SensorBasedSettings> sensorSettings;
+    ThemeMode currentTheme = ThemeLight;
 
     void setupUI();
     void createMenuBar();
     void connectSignals();
     void restoreAutoMode();
     void updateSensorListInFanWidgets();
+    void applyTheme(ThemeMode theme);
 
     // Settings management
     void saveSettings();

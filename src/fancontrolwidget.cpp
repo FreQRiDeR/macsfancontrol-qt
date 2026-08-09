@@ -77,7 +77,7 @@ void FanControlWidget::setupUI(const FanInfo& fanInfo)
     QHBoxLayout *currentRow = new QHBoxLayout();
     currentRow->addWidget(new QLabel("Current:", this));
     labelCurrentRPM = new QLabel(QString("%1 RPM").arg(fanInfo.currentRPM), this);
-    labelCurrentRPM->setStyleSheet("font-weight: bold; color: #333;");
+    labelCurrentRPM->setStyleSheet("font-weight: bold; color: #666;");
     currentRow->addWidget(labelCurrentRPM);
     currentRow->addStretch();
 
