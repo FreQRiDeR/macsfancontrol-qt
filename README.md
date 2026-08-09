@@ -63,6 +63,7 @@ make
 ls -l macsfancontrol
 
 # Optionally, Create the .deb installer.
+./build_deb.sh
 ```
 
 ### On macOS (using Docker)
