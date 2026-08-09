@@ -1,5 +1,5 @@
 <div align="center">
-             <img src="/macsfancontrol-qt/macsfancontrol.png" width="400" />
+             <img src="/macsfancontrol.png" width="400" />
 </div>
 
 
