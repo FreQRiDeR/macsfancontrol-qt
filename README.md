@@ -133,6 +133,9 @@ Each fan has its own control widget with three operating modes:
     - Above max temp → maximum RPM
     - Between min/max → linear interpolation between min and max RPM
   - Current temperature of selected sensor is displayed in real-time
+ 
+  - Save a preset and toggle 'Load at Boot'.
+    This will create a daemon that will launch saved settings when you boot linux. 
 
 #### Common Controls
 
