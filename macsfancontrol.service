@@ -1,0 +1,13 @@
+[Unit]
+Description=Mac Fan Control boot launcher
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/macsfancontrol-boot
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

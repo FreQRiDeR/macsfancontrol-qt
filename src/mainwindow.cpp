@@ -32,24 +32,7 @@
 #include <QLineEdit>
 #include <QVBoxLayout>
 
-static QString findPrivilegeElevator()
-{
-    QString elevator = QStandardPaths::findExecutable("pkexec");
-    if (!elevator.isEmpty()) {
-        return elevator;
-    }
-    return QString();
-}
 
-static bool launchElevated(const QStringList &args)
-{
-    QString elevator = findPrivilegeElevator();
-    if (elevator.isEmpty()) {
-        return false;
-    }
-
-    return QProcess::startDetached(elevator, args);
-}
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
@@ -783,6 +766,18 @@ void MainWindow::setPresetLaunchAtBoot(const QString& presetName, bool launchAtB
     settings.endGroup();
 }
 
+bool MainWindow::createUserAutostart(const QString& presetName)
+{
+    Q_UNUSED(presetName);
+    qWarning() << "User autostart is deprecated; boot launch is handled by the system service";
+    return true;
+}
+
+void MainWindow::removeUserAutostart()
+{
+    qWarning() << "No action needed; boot launch is handled by the system service";
+}
+
 void MainWindow::savePresetToSettings(const QString& presetName, bool launchAtBoot)
 {
     setPresetLaunchAtBoot(presetName, launchAtBoot);
@@ -827,7 +822,8 @@ bool MainWindow::loadPresetFromSettings(const QString& presetName)
 
     bool launchAtBoot = settings.value("launchAtBoot", false).toBool();
     if (launchAtBoot) {
-        installBootPresetService(presetName);
+        // Use per-user autostart for all users (systemd installer removed)
+        createUserAutostart(presetName);
     }
 
     for (int i = 0; i < fanWidgets.size(); i++) {
@@ -855,79 +851,7 @@ bool MainWindow::loadPresetByName(const QString& presetName)
     return loadPresetFromSettings(presetName);
 }
 
-bool MainWindow::installBootPresetService(const QString& presetName)
-{
-    if (geteuid() != 0) {
-        QString program = QCoreApplication::applicationFilePath();
-        QStringList args;
-        args << program << "--install-boot-service" << presetName;
-        if (launchElevated(args)) {
-            QMessageBox::information(this, "Administrator Authentication",
-                                     "A privileged helper has been launched to install the boot service. "
-                                     "Please authenticate when prompted.");
-            return true;
-        }
-
-        QMessageBox::critical(this, "Elevation Failed",
-                              "Unable to request administrator privileges to install the boot service. "
-                              "Please run the app as root or install pkexec.");
-        return false;
-    }
-
-    writeBootPresetConfig(presetName);
-
-    QString servicePath = "/etc/systemd/system/macsfancontrol-boot.service";
-    QString appPath = QCoreApplication::applicationFilePath();
-    QString serviceContent = QString("[Unit]\n"
-                                      "Description=Mac Fan Control boot preset service\n"
-                                      "After=network.target\n\n"
-                                      "[Service]\n"
-                                      "Type=simple\n"
-                                      "EnvironmentFile=-/etc/macsfancontrol/boot-preset\n"
-                                      "ExecStart=%1 --daemon --preset ${BOOT_PRESET}\n"
-                                      "Restart=on-failure\n"
-                                      "RestartSec=5\n\n"
-                                      "[Install]\n"
-                                      "WantedBy=multi-user.target\n").arg(appPath);
-
-    QDir().mkpath("/etc/macsfancontrol");
-    QFile serviceFile(servicePath);
-    if (!serviceFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        qWarning() << "Unable to write boot service file" << servicePath;
-        return false;
-    }
-    serviceFile.write(serviceContent.toUtf8());
-    serviceFile.close();
-
-    QProcess process;
-    process.setProcessChannelMode(QProcess::MergedChannels);
-    QStringList args;
-    args << "daemon-reload";
-    process.start("systemctl", args);
-    if (!process.waitForFinished(10000)) {
-        qWarning() << "systemctl daemon-reload timed out";
-    }
-
-    process.start("systemctl", QStringList() << "enable" << "macsfancontrol-boot.service");
-    if (!process.waitForFinished(10000)) {
-        qWarning() << "systemctl enable timed out";
-    }
-
-    return true;
-}
-
-void MainWindow::writeBootPresetConfig(const QString& presetName)
-{
-    QDir().mkpath("/etc/macsfancontrol");
-    QFile file("/etc/macsfancontrol/boot-preset");
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        qWarning() << "Unable to write boot preset config";
-        return;
-    }
-
-    file.write(QString("BOOT_PRESET=%1\n").arg(presetName).toUtf8());
-    file.close();
-}
+// Boot launch is handled by the packaged systemd service and helper script.
 
 bool MainWindow::promptForPresetLaunchAtBoot(const QString& presetName, bool currentValue)
 {
@@ -1024,7 +948,10 @@ void MainWindow::savePreset()
     bool enableBoot = promptForPresetLaunchAtBoot(presetName, launchAtBoot);
     savePresetToSettings(presetName, enableBoot);
     if (enableBoot) {
-        installBootPresetService(presetName);
+        createUserAutostart(presetName);
+    } else {
+        // If the user disabled launch at boot, remove any per-user autostart file
+        removeUserAutostart();
     }
     statusBar()->showMessage(QString("Preset '%1' saved").arg(presetName), 3000);
 }
@@ -1059,7 +986,9 @@ void MainWindow::loadPreset()
         bool enableBoot = promptForPresetLaunchAtBoot(presetName, launchAtBoot);
         setPresetLaunchAtBoot(presetName, enableBoot);
         if (enableBoot) {
-            installBootPresetService(presetName);
+            createUserAutostart(presetName);
+        } else {
+            removeUserAutostart();
         }
 
         if (loadPresetByName(presetName)) {

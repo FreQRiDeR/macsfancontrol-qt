@@ -39,7 +39,7 @@ private slots:
 
 public:
     bool loadPresetByName(const QString& presetName);
-    bool installBootPresetService(const QString& presetName);
+    
 
 private:
     SMCInterface *smcInterface;
@@ -72,8 +72,11 @@ private:
     void setPresetLaunchAtBoot(const QString& presetName, bool launchAtBoot);
     bool loadPresetFromSettings(const QString& presetName);
     void applyFanSettings(int fanIndex, FanMode mode, int targetRPM, int sensorIndex, int minTemp, int maxTemp);
-    void writeBootPresetConfig(const QString& presetName);
+    
     bool promptForPresetLaunchAtBoot(const QString& presetName, bool currentValue);
+    // Autostart helpers (per-user)
+    bool createUserAutostart(const QString& presetName);
+    void removeUserAutostart();
 };
 
 #endif // MAINWINDOW_H

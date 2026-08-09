@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Mac Fan Control
+Comment=Monitor and control Apple Mac fans on Linux
+Exec=/usr/bin/macsfancontrol-pkexec
+Icon=/usr/share/pixmaps/macsfancontrol.png
+Terminal=false
+Type=Application
+Categories=Utility;System;

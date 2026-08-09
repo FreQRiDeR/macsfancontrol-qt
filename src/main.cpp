@@ -32,33 +32,7 @@ static bool launchElevated(const QStringList &args)
     return QProcess::startDetached(elevator, args);
 }
 
-static bool installBootServiceAsRoot(const QString &presetName, QString &error)
-{
-    if (geteuid() == 0) {
-        MainWindow window;
-        if (!window.installBootPresetService(presetName)) {
-            error = "Failed to install boot service.";
-            return false;
-        }
-        return true;
-    }
-
-    QString elevator = findPrivilegeElevator();
-    if (elevator.isEmpty()) {
-        error = "Administrator authorization is required, but no pkexec binary was found.";
-        return false;
-    }
-
-    QString program = QCoreApplication::applicationFilePath();
-    QStringList args;
-    args << program << "--install-boot-service" << presetName;
-    if (QProcess::startDetached(elevator, args)) {
-        return true;
-    }
-
-    error = "Failed to launch pkexec to request administrator privileges.";
-    return false;
-}
+// systemd installer helper removed
 
 static void debugMessageHandler(QtMsgType type, const QMessageLogContext& /*context*/, const QString& msg)
 {
@@ -95,11 +69,7 @@ int main(int argc, char *argv[])
     parser.addOption({"daemon", "Run without showing the GUI"});
     parser.addOption({"preset", "Load a saved preset on startup", "preset"});
 
-    QCommandLineOption installBootServiceOption("install-boot-service",
-                                                "Install boot service for preset",
-                                                "preset");
-    installBootServiceOption.setFlags(QCommandLineOption::HiddenFromHelp);
-    parser.addOption(installBootServiceOption);
+    // systemd installer option removed
 
     QStringList arguments;
     for (int i = 0; i < argc; ++i) {
@@ -121,17 +91,7 @@ int main(int argc, char *argv[])
     app.setApplicationVersion("1.0");
     app.setOrganizationName("macsfancontrol-qt");
 
-    if (parser.isSet(installBootServiceOption)) {
-        QString presetName = parser.value(installBootServiceOption);
-        QString error;
-        if (!installBootServiceAsRoot(presetName, error)) {
-            QMessageBox::critical(nullptr, "Boot Service Install Failed", error);
-            return 1;
-        }
-        QMessageBox::information(nullptr, "Boot Service Installed",
-                                 "The boot service was installed successfully.");
-        return 0;
-    }
+    // systemd installer handling removed
 
     if (daemonMode) {
         if (geteuid() != 0) {
