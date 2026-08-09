@@ -1,3 +1,8 @@
+<div align="center">
+             <img src="/macsfancontrol-qt/macsfancontrol.png" width="400" />
+</div>
+
+
 # Mac Fan Control for Linux (Qt5)
 
 A Qt5 GUI application for controlling Apple SMC (System Management Controller) fans on Mac hardware running Linux.
@@ -52,6 +57,8 @@ make
 
 # The executable will be created in the current directory
 ls -l macsfancontrol
+
+# Oprionally run sudo ./build_deb.sh to create /deb installer. 
 ```
 
 ### On macOS (using Docker)
