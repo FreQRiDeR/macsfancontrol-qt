@@ -29,7 +29,12 @@ static bool launchElevated(const QStringList &args)
         return false;
     }
 
-    return QProcess::startDetached(elevator, args);
+    QStringList commandArgs;
+    commandArgs << QStringLiteral("--")
+                << QCoreApplication::applicationFilePath();
+    commandArgs << args;
+
+    return QProcess::startDetached(elevator, commandArgs);
 }
 
 // systemd installer helper removed
