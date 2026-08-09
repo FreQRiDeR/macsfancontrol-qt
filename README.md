@@ -15,6 +15,10 @@ A Qt5 GUI application for controlling Apple SMC (System Management Controller) f
 - **Temperature display**: Monitor all 68 temperature sensors with color-coded values
 - **Clean interface**: Intuitive Qt5 GUI similar to macsfancontrol for macOS
 
+<div align="center">
+             <img src="/window1.png" width="400" />
+</div>
+
 ## Requirements
 
 - Mac hardware (Mac Pro, iMac, MacBook, etc.) running Linux
