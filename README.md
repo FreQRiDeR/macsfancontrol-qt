@@ -16,7 +16,7 @@ A Qt5 GUI application for controlling Apple SMC (System Management Controller) f
 - **Clean interface**: Intuitive Qt5 GUI similar to macsfancontrol for macOS
 
 <div align="center">
-             <img src="/window1.png" width="400" />
+             <img src="/window1.png" width="700" />
 </div>
 
 ## Requirements
