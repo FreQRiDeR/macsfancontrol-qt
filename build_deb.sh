@@ -62,6 +62,9 @@ chmod 755 "$BIN_DIR/$PKG_NAME"
 
 cat > "$BIN_DIR/$PKG_NAME-pkexec" <<'EOF'
 #!/bin/sh
+# pkexec strips the environment by default. Without DISPLAY, XAUTHORITY and
+# DBUS_SESSION_BUS_ADDRESS the elevated Qt GUI cannot connect to the user's
+# graphical session, so the app would appear to never launch from the desktop.
 exec pkexec env DISPLAY="${DISPLAY:-}" XAUTHORITY="${XAUTHORITY:-}" DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" /usr/bin/macsfancontrol "$@"
 EOF
 chmod 755 "$BIN_DIR/$PKG_NAME-pkexec"
@@ -108,9 +111,17 @@ cat > "$PKG_DIR/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+  # Remove an obsolete boot-preset unit from older releases. Two enabled
+  # daemons writing the same sysfs fan files caused the GUI to lose control
+  # of the fans, so make sure only the current macsfancontrol.service runs.
+  if systemctl list-unit-files 2>/dev/null | grep -q 'macsfancontrol-boot.service'; then
+    systemctl stop macsfancontrol-boot.service >/dev/null 2>&1 || true
+    systemctl disable macsfancontrol-boot.service >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/macsfancontrol-boot.service
+  fi
   systemctl daemon-reload >/dev/null 2>&1 || true
   systemctl enable macsfancontrol.service >/dev/null 2>&1 || true
-  systemctl start macsfancontrol.service >/dev/null 2>&1 || true
+  systemctl restart macsfancontrol.service >/dev/null 2>&1 || true
 fi
 EOF
 chmod 755 "$PKG_DIR/DEBIAN/postinst"

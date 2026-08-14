@@ -1,6 +1,10 @@
 #include "mainwindow.h"
 #include "sensordescriptions.h"
 #include <unistd.h>
+#include <sys/file.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <QCoreApplication>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QScrollArea>
@@ -37,12 +41,16 @@
 
 
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(QWidget *parent, bool nonInteractive)
     : QMainWindow(parent),
       smcInterface(new SMCInterface(this)),
       hwmonInterface(new HWMonInterface(this)),
       tempPanel(new TemperaturePanel(this)),
-      updateTimer(new QTimer(this))
+      updateTimer(new QTimer(this)),
+      nonInteractiveMode(nonInteractive),
+      initialized(false),
+      fanControlLockFd(-1),
+      lockWatchTimer(new QTimer(this))
 {
     bool smcAvailable = false;
     bool hwmonAvailable = false;
@@ -66,11 +74,14 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Check if at least one interface is available
     if (!smcAvailable && !hwmonAvailable) {
-        QMessageBox::critical(this, "Initialization Error",
-                            "No fan control interfaces found.\n"
-                            "Make sure you're running on compatible hardware with "
-                            "applesmc or hwmon drivers loaded.");
-        QTimer::singleShot(0, qApp, &QApplication::quit);
+        initializationErrorMessage = "No fan control interfaces found. "
+                                     "Make sure you're running on compatible hardware with "
+                                     "applesmc or hwmon drivers loaded.";
+        qCritical().noquote() << initializationErrorMessage;
+        if (!nonInteractiveMode) {
+            QMessageBox::critical(this, "Initialization Error", initializationErrorMessage);
+            QTimer::singleShot(0, qApp, &QApplication::quit);
+        }
         return;
     }
 
@@ -79,10 +90,44 @@ MainWindow::MainWindow(QWidget *parent)
     bool canWriteHWMon = hwmonAvailable && hwmonInterface->hasWritePermission();
 
     if ((smcAvailable && !canWriteSMC) || (hwmonAvailable && !canWriteHWMon)) {
-        QMessageBox::warning(this, "Permission Warning",
-                           "Application does not have write permissions to all fan interfaces.\n"
-                           "You may be able to monitor some fans but not control them.\n"
-                           "Run with: sudo macsfancontrol");
+        QString permissionWarning = "Application does not have write permissions to all fan interfaces.\n"
+                                    "You may be able to monitor some fans but not control them.\n"
+                                    "Run with: sudo macsfancontrol";
+        qWarning().noquote() << permissionWarning;
+        if (!nonInteractiveMode) {
+            QMessageBox::warning(this, "Permission Warning", permissionWarning);
+        }
+    }
+
+    // Acquire the single-writer fan-control lock. The interactive GUI is
+    // allowed to take over from a running daemon (it will signal the daemon
+    // to stand down); a daemon must not displace another live instance.
+    if (!acquireFanControlLock(/*allowTakeover=*/!nonInteractiveMode)) {
+        initializationErrorMessage = "Another instance of Mac Fan Control is already "
+                                     "controlling the fans.";
+        qWarning().noquote() << initializationErrorMessage;
+        if (nonInteractiveMode) {
+            // Daemon could not acquire the lock: another instance owns it.
+            return;
+        }
+    }
+
+    // Daemon must continually verify it still owns the lock; if the GUI
+    // launches and takes over, the daemon restores auto mode and exits.
+    if (nonInteractiveMode) {
+        connect(lockWatchTimer, &QTimer::timeout, this, [this]() {
+            if (fanControlLockFd < 0)
+                return;
+            // Re-test the lock non-blocking. If we can re-acquire it we still
+            // own it (flock is associated with the open file description).
+            if (flock(fanControlLockFd, LOCK_EX | LOCK_NB) != 0 && errno == EWOULDBLOCK) {
+                qInfo() << "Fan control lock taken over by another instance; daemon standing down.";
+                restoreAutoMode();
+                releaseFanControlLock();
+                QCoreApplication::quit();
+            }
+        });
+        lockWatchTimer->start(2000);
     }
 
     defaultPalette = qApp->palette();
@@ -107,15 +152,21 @@ MainWindow::MainWindow(QWidget *parent)
     updateSensorData();
 
     statusBar()->showMessage("Ready");
+    initialized = true;
 }
 
 MainWindow::~MainWindow()
 {
+    if (!initialized)
+        return;
+
     // Save current settings before exit
     saveSettings();
 
     // Restore all fans to automatic mode on exit
     restoreAutoMode();
+    // Release the single-writer lock so another instance can take over.
+    releaseFanControlLock();
 }
 
 void MainWindow::setupUI()
@@ -470,9 +521,11 @@ void MainWindow::showError(const QString& message)
     // For critical permission errors, show dialog
     if (message.contains("permission", Qt::CaseInsensitive) ||
         message.contains("root", Qt::CaseInsensitive)) {
-        QMessageBox::critical(this, "Permission Error",
-                            "Cannot write to SMC interface.\n\n" + message +
-                            "\n\nPlease run with: sudo macsfancontrol");
+        if (!nonInteractiveMode) {
+            QMessageBox::critical(this, "Permission Error",
+                                "Cannot write to SMC interface.\n\n" + message +
+                                "\n\nPlease run with: sudo macsfancontrol");
+        }
     }
 }
 
@@ -692,6 +745,104 @@ void MainWindow::restoreAutoMode()
     }
 }
 
+
+// --- Single-writer fan-control lock -------------------------------------
+// Prevents multiple instances (e.g. a boot daemon and the interactive GUI,
+// or two daemons from leftover systemd units) from writing to the same
+// sysfs fan files at the same time. Without this, a daemon reapplying its
+// preset every second silently overwrites whatever the user sets in the GUI.
+//
+// Strategy: an exclusive flock() on /run/macsfancontrol.lock, with the
+// holder's PID written into the file. The interactive GUI is allowed to
+// take over: it asks the current holder to quit (SIGTERM) and then acquires
+// the lock. A daemon never displaces an existing holder.
+static int readLockHolderPid(int fd)
+{
+    char buf[32] = {0};
+    if (lseek(fd, 0, SEEK_SET) == (off_t)-1)
+        return -1;
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    if (n <= 0)
+        return -1;
+    bool ok = false;
+    int pid = QByteArray(buf).trimmed().toInt(&ok);
+    return ok ? pid : -1;
+}
+
+static void writeLockHolderPid(int fd)
+{
+    if (ftruncate(fd, 0) == -1)
+        return;
+    lseek(fd, 0, SEEK_SET);
+    QByteArray pid = QByteArray::number(QCoreApplication::applicationPid());
+    ssize_t written = ::write(fd, pid.constData(), pid.size());
+    (void)written;
+}
+
+bool MainWindow::acquireFanControlLock(bool allowTakeover)
+{
+    const char *lockPath = "/run/macsfancontrol.lock";
+    int fd = ::open(lockPath, O_RDWR | O_CREAT, 064);
+    if (fd < 0) {
+        qWarning() << "Cannot open fan control lock" << lockPath << ":" << strerror(errno);
+        // If /run is not writable (unlikely for root), continue without the
+        // lock rather than blocking fan control entirely.
+        return true;
+    }
+
+    if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+        fanControlLockFd = fd;
+        writeLockHolderPid(fd);
+        return true;
+    }
+
+    // Lock is held by someone else.
+    int holderPid = readLockHolderPid(fd);
+    if (!allowTakeover) {
+        ::close(fd);
+        return false;
+    }
+
+    // GUI takeover: politely ask the holder to quit, then wait briefly for it
+    // to release. A daemon restores auto mode and exits on SIGTERM (its
+    // destructor handles cleanup); a stale holder is reaped if still alive.
+    if (holderPid > 0 && holderPid != QCoreApplication::applicationPid()) {
+        if (::kill(holderPid, SIGTERM) == 0) {
+            for (int i = 0; i < 20; ++i) {  // up to ~2s
+                if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+                    fanControlLockFd = fd;
+                    writeLockHolderPid(fd);
+                    return true;
+                }
+                usleep(100 * 1000);
+            }
+        }
+    }
+
+    // Last resort: blocking acquire (holder died without releasing).
+    if (flock(fd, LOCK_EX) == 0) {
+        fanControlLockFd = fd;
+        writeLockHolderPid(fd);
+        return true;
+    }
+
+    ::close(fd);
+    return false;
+}
+
+void MainWindow::releaseFanControlLock()
+{
+    if (fanControlLockFd >= 0) {
+        if (ftruncate(fanControlLockFd, 0) == 0)
+            writeLockHolderPid(fanControlLockFd);
+        flock(fanControlLockFd, LOCK_UN);
+        ::close(fanControlLockFd);
+        fanControlLockFd = -1;
+    }
+}
+// ------------------------------------------------------------------------
+
+
 void MainWindow::onManualModeRequested(int fanWidgetIndex, bool enable)
 {
     if (fanWidgetIndex < 0 || fanWidgetIndex >= fanWidgets.size()) {
@@ -770,12 +921,11 @@ void MainWindow::updateSensorListInFanWidgets()
 void MainWindow::saveSettings()
 {
     QSettings settings("macsfancontrol", "macsfancontrol-qt");
-
     settings.beginGroup("LastSession");
     settings.setValue("fanCount", fanWidgets.size());
     settings.setValue("useFahrenheit", tempPanel->isUsingFahrenheit());
+    settings.setValue("canonicalCelsius", true);
     settings.setValue("theme", currentTheme == ThemeDark ? "dark" : "light");
-
     for (int i = 0; i < fanWidgets.size(); i++) {
         settings.beginGroup(QString("Fan%1").arg(i));
         settings.setValue("mode", static_cast<int>(fanWidgets[i]->getCurrentMode()));
@@ -785,7 +935,6 @@ void MainWindow::saveSettings()
         settings.setValue("maxTemp", fanWidgets[i]->getMaxTemp());
         settings.endGroup();
     }
-
     settings.endGroup();
     qDebug() << "Settings saved";
 }
@@ -793,12 +942,11 @@ void MainWindow::saveSettings()
 void MainWindow::loadSettings()
 {
     QSettings settings("macsfancontrol", "macsfancontrol-qt");
-
     settings.beginGroup("LastSession");
     int savedFanCount = settings.value("fanCount", 0).toInt();
     bool savedUseFahrenheit = settings.value("useFahrenheit", false).toBool();
+    bool canonicalCelsius = settings.value("canonicalCelsius", false).toBool();
     QString savedTheme = settings.value("theme", "light").toString();
-
     if (savedTheme == "dark") {
         applyTheme(ThemeDark);
     } else {
@@ -816,15 +964,16 @@ void MainWindow::loadSettings()
 
     for (int i = 0; i < fanWidgets.size(); i++) {
         settings.beginGroup(QString("Fan%1").arg(i));
-
         FanMode mode = static_cast<FanMode>(settings.value("mode", MODE_AUTO).toInt());
         int targetRPM = settings.value("targetRPM", 2000).toInt();
         int sensorIndex = settings.value("sensorIndex", -1).toInt();
         int minTemp = settings.value("minTemp", 40).toInt();
         int maxTemp = settings.value("maxTemp", 80).toInt();
-
+        if (!canonicalCelsius && (minTemp > 100 || maxTemp > 120)) {
+            minTemp = qRound((minTemp - 32.0) * 5.0 / 9.0);
+            maxTemp = qRound((maxTemp - 32.0) * 5.0 / 9.0);
+        }
         applyFanSettings(i, mode, targetRPM, sensorIndex, minTemp, maxTemp);
-
         settings.endGroup();
     }
 
@@ -872,11 +1021,12 @@ void MainWindow::savePresetToSettings(const QString& presetName, bool launchAtBo
     setPresetLaunchAtBoot(presetName, launchAtBoot);
 
     QSettings settings("macsfancontrol", "macsfancontrol-qt");
-
     settings.beginGroup("Presets");
     settings.beginGroup(presetName);
+
     settings.setValue("fanCount", fanWidgets.size());
     settings.setValue("launchAtBoot", launchAtBoot);
+    settings.setValue("canonicalCelsius", true);
 
     for (int i = 0; i < fanWidgets.size(); i++) {
         settings.beginGroup(QString("Fan%1").arg(i));
@@ -887,7 +1037,6 @@ void MainWindow::savePresetToSettings(const QString& presetName, bool launchAtBo
         settings.setValue("maxTemp", fanWidgets[i]->getMaxTemp());
         settings.endGroup();
     }
-
     settings.endGroup();
     settings.endGroup();
     qDebug() << "Preset saved:" << presetName;
@@ -896,20 +1045,31 @@ void MainWindow::savePresetToSettings(const QString& presetName, bool launchAtBo
 bool MainWindow::loadPresetFromSettings(const QString& presetName)
 {
     QSettings settings("macsfancontrol", "macsfancontrol-qt");
-
     settings.beginGroup("Presets");
+    if (!settings.childGroups().contains(presetName)) {
+        if (!nonInteractiveMode) {
+            QMessageBox::warning(this, "Preset Error", QString("Preset '%1' does not exist.").arg(presetName));
+        } else {
+            qWarning() << "Preset" << presetName << "does not exist.";
+        }
+        settings.endGroup();
+        return false;
+    }
     settings.beginGroup(presetName);
     int savedFanCount = settings.value("fanCount", 0).toInt();
-
     if (savedFanCount != fanWidgets.size()) {
-        QMessageBox::warning(this, "Preset Error",
-                           "This preset was saved with a different fan configuration.");
+        if (!nonInteractiveMode) {
+            QMessageBox::warning(this, "Preset Error",
+                               "This preset was saved with a different fan configuration.");
+        } else {
+            qWarning() << "Preset" << presetName << "was saved with a different fan configuration.";
+        }
         settings.endGroup();
         settings.endGroup();
         return false;
     }
-
     bool launchAtBoot = settings.value("launchAtBoot", false).toBool();
+    bool canonicalCelsius = settings.value("canonicalCelsius", false).toBool();
     if (launchAtBoot) {
         // Use per-user autostart for all users (systemd installer removed)
         createUserAutostart(presetName);
@@ -917,27 +1077,53 @@ bool MainWindow::loadPresetFromSettings(const QString& presetName)
 
     for (int i = 0; i < fanWidgets.size(); i++) {
         settings.beginGroup(QString("Fan%1").arg(i));
-
         FanMode mode = static_cast<FanMode>(settings.value("mode", MODE_AUTO).toInt());
         int targetRPM = settings.value("targetRPM", 2000).toInt();
         int sensorIndex = settings.value("sensorIndex", -1).toInt();
         int minTemp = settings.value("minTemp", 40).toInt();
         int maxTemp = settings.value("maxTemp", 80).toInt();
-
+        if (!canonicalCelsius && (minTemp > 100 || maxTemp > 120)) {
+            minTemp = qRound((minTemp - 32.0) * 5.0 / 9.0);
+            maxTemp = qRound((maxTemp - 32.0) * 5.0 / 9.0);
+        }
         applyFanSettings(i, mode, targetRPM, sensorIndex, minTemp, maxTemp);
-
         settings.endGroup();
     }
-
     settings.endGroup();
     settings.endGroup();
     qDebug() << "Preset loaded:" << presetName;
     return true;
 }
-
 bool MainWindow::loadPresetByName(const QString& presetName)
 {
     return loadPresetFromSettings(presetName);
+}
+QString MainWindow::getBootPresetName() const
+{
+    QSettings settings("macsfancontrol", "macsfancontrol-qt");
+    settings.beginGroup("Presets");
+    QStringList presets = settings.childGroups();
+    for (const QString& preset : presets) {
+        settings.beginGroup(preset);
+        bool launchAtBoot = settings.value("launchAtBoot", false).toBool();
+        settings.endGroup();
+        if (launchAtBoot) {
+            settings.endGroup();
+            return preset;
+        }
+    }
+    settings.endGroup();
+    return QString();
+}
+bool MainWindow::loadBootPreset()
+{
+    QString bootPreset = getBootPresetName();
+    if (bootPreset.isEmpty()) {
+        qDebug() << "No preset set to launch at boot.";
+        return false;
+    }
+    qDebug() << "Loading boot preset:" << bootPreset;
+    return loadPresetByName(bootPreset);
 }
 
 // Boot launch is handled by the packaged systemd service and helper script.
@@ -1187,6 +1373,7 @@ void MainWindow::exportPreset()
         settings.endGroup();
     }
     root["fans"] = fans;
+    root["canonicalCelsius"] = true;
 
     settings.endGroup();
     settings.endGroup();
@@ -1301,19 +1488,26 @@ void MainWindow::importPreset()
 
     // Save to settings
     QJsonArray fans = root.value("fans").toArray();
+    bool canonicalCelsius = root.value("canonicalCelsius").toBool(false);
     QSettings settings("macsfancontrol", "macsfancontrol-qt");
     settings.beginGroup("Presets");
     settings.beginGroup(saveName);
     settings.setValue("fanCount", qMin(fans.size(), fanWidgets.size()));
-
+    settings.setValue("canonicalCelsius", true);
     for (int i = 0; i < qMin(fans.size(), fanWidgets.size()); i++) {
         QJsonObject fan = fans.at(i).toObject();
         settings.beginGroup(QString("Fan%1").arg(i));
         settings.setValue("mode", fan.value("mode").toInt(MODE_AUTO));
         settings.setValue("targetRPM", fan.value("targetRPM").toInt(0));
         settings.setValue("sensorIndex", fan.value("sensorIndex").toInt(-1));
-        settings.setValue("minTemp", fan.value("minTemp").toInt(0));
-        settings.setValue("maxTemp", fan.value("maxTemp").toInt(0));
+        int minTemp = fan.value("minTemp").toInt(0);
+        int maxTemp = fan.value("maxTemp").toInt(0);
+        if (!canonicalCelsius && (minTemp > 100 || maxTemp > 120)) {
+            minTemp = qRound((minTemp - 32.0) * 5.0 / 9.0);
+            maxTemp = qRound((maxTemp - 32.0) * 5.0 / 9.0);
+        }
+        settings.setValue("minTemp", minTemp);
+        settings.setValue("maxTemp", maxTemp);
         settings.endGroup();
     }
 

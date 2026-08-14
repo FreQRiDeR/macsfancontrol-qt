@@ -29,9 +29,22 @@ static bool launchElevated(const QStringList &args)
         return false;
     }
 
+    // pkexec strips the environment by default. Without DISPLAY, XAUTHORITY
+    // and DBUS_SESSION_BUS_ADDRESS the elevated Qt GUI cannot connect to the
+    // user's graphical session, so the app would appear to never launch.
+    // Run through `env` to pass the graphical session through to the child.
     QStringList commandArgs;
     commandArgs << QStringLiteral("--")
-                << QCoreApplication::applicationFilePath();
+                << QStringLiteral("env");
+    const char *envVars[] = { "DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS" };
+    for (const char *var : envVars) {
+        const QByteArray value = qgetenv(var);
+        if (!value.isEmpty()) {
+            commandArgs << QStringLiteral("%1=%2").arg(QLatin1String(var),
+                                                        QString::fromLocal8Bit(value));
+        }
+    }
+    commandArgs << QCoreApplication::applicationFilePath();
     commandArgs << args;
 
     return QProcess::startDetached(elevator, commandArgs);
@@ -67,26 +80,11 @@ int main(int argc, char *argv[])
 
     QCoreApplication::setAttribute(Qt::AA_Use96Dpi, true);
 
-    QCommandLineParser parser;
-    parser.setApplicationDescription("Mac Fan Control");
-    parser.addHelpOption();
-    parser.addVersionOption();
-    parser.addOption({"daemon", "Run without showing the GUI"});
-    parser.addOption({"preset", "Load a saved preset on startup", "preset"});
-
-    // systemd installer option removed
-
-    QStringList arguments;
-    for (int i = 0; i < argc; ++i) {
-        arguments << QString::fromLocal8Bit(argv[i]);
-    }
-    parser.process(arguments);
-
-    bool daemonMode = parser.isSet("daemon");
-    QString presetName = parser.value("preset");
-
-    if (daemonMode) {
-        qputenv("QT_QPA_PLATFORM", "offscreen");
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--daemon") == 0) {
+            qputenv("QT_QPA_PLATFORM", "offscreen");
+            break;
+        }
     }
 
     QApplication app(argc, argv);
@@ -96,6 +94,18 @@ int main(int argc, char *argv[])
     app.setApplicationVersion("1.0");
     app.setOrganizationName("macsfancontrol-qt");
 
+    QCommandLineParser parser;
+    parser.setApplicationDescription("Mac Fan Control");
+    parser.addHelpOption();
+    parser.addVersionOption();
+    parser.addOption({"daemon", "Run without showing the GUI"});
+    parser.addOption({"preset", "Load a saved preset on startup", "preset"});
+
+    parser.process(app);
+
+    bool daemonMode = parser.isSet("daemon");
+    QString presetName = parser.value("preset");
+
     // systemd installer handling removed
 
     if (daemonMode) {
@@ -104,10 +114,22 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-        MainWindow window;
+        MainWindow window(nullptr, true);
+        if (!window.isInitialized()) {
+            qCritical().noquote() << "Daemon startup failed:" << window.initializationError();
+            return 1;
+        }
         window.hide();
         if (!presetName.isEmpty()) {
-            window.loadPresetByName(presetName);
+            if (!window.loadPresetByName(presetName)) {
+                qCritical() << "Failed to load requested preset:" << presetName;
+                return 1;
+            }
+        } else {
+            if (!window.loadBootPreset()) {
+                qInfo() << "No preset configured to launch at boot. Exiting daemon.";
+                return 0;
+            }
         }
         return app.exec();
     }
@@ -128,7 +150,7 @@ int main(int argc, char *argv[])
             return 0;
         }
         if (msgBox.clickedButton() == runAsAdmin) {
-            QStringList elevatedArgs = arguments.mid(1);
+            QStringList elevatedArgs = app.arguments().mid(1);
             if (launchElevated(elevatedArgs)) {
                 return 0;
             }

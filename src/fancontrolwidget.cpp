@@ -300,7 +300,7 @@ void FanControlWidget::onSensorSettingsChanged()
 
     // Emit signal with sensor-based settings
     emit sensorBasedModeChanged(fanIndex, true, selectedSensorIndex,
-                                 spinMinTemp->value(), spinMaxTemp->value());
+                                 getMinTemp(), getMaxTemp());
 }
 
 static int celsiusToFahrenheit(int celsius)
@@ -311,6 +311,16 @@ static int celsiusToFahrenheit(int celsius)
 static int fahrenheitToCelsius(int fahrenheit)
 {
     return qRound((fahrenheit - 32.0) * 5.0 / 9.0);
+}
+
+int FanControlWidget::getMinTemp() const
+{
+    return useFahrenheit ? fahrenheitToCelsius(spinMinTemp->value()) : spinMinTemp->value();
+}
+
+int FanControlWidget::getMaxTemp() const
+{
+    return useFahrenheit ? fahrenheitToCelsius(spinMaxTemp->value()) : spinMaxTemp->value();
 }
 
 void FanControlWidget::setUseFahrenheit(bool useFahrenheit)
@@ -325,9 +335,13 @@ void FanControlWidget::setUseFahrenheit(bool useFahrenheit)
     int maxValue = spinMaxTemp->value();
 
     if (useFahrenheit) {
+        spinMinTemp->setRange(celsiusToFahrenheit(0), celsiusToFahrenheit(100));
+        spinMaxTemp->setRange(celsiusToFahrenheit(0), celsiusToFahrenheit(120));
         spinMinTemp->setValue(celsiusToFahrenheit(minValue));
         spinMaxTemp->setValue(celsiusToFahrenheit(maxValue));
     } else {
+        spinMinTemp->setRange(0, 100);
+        spinMaxTemp->setRange(0, 120);
         spinMinTemp->setValue(fahrenheitToCelsius(minValue));
         spinMaxTemp->setValue(fahrenheitToCelsius(maxValue));
     }
@@ -430,8 +444,13 @@ void FanControlWidget::setTargetRPM(int rpm)
 void FanControlWidget::setSensorBasedSettings(int sensorIndex, int minTemp, int maxTemp)
 {
     selectedSensorIndex = sensorIndex;
-    spinMinTemp->setValue(minTemp);
-    spinMaxTemp->setValue(maxTemp);
+    if (useFahrenheit) {
+        spinMinTemp->setValue(celsiusToFahrenheit(minTemp));
+        spinMaxTemp->setValue(celsiusToFahrenheit(maxTemp));
+    } else {
+        spinMinTemp->setValue(minTemp);
+        spinMaxTemp->setValue(maxTemp);
+    }
 
     // Update combo box to show the selected sensor
     for (int i = 0; i < comboSensor->count(); i++) {
