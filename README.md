@@ -62,7 +62,7 @@ make
 # The executable will be created in the current directory
 ls -l macsfancontrol
 
-# Create the .deb installer without sudo
+# Optionally, Create the .deb installer.
 ./build_deb.sh
 ```
 
