@@ -103,7 +103,7 @@ int main(int argc, char *argv[])
 
     // Set application information
     app.setApplicationName("Mac Fan Control");
-    app.setApplicationVersion("1.0");
+    app.setApplicationVersion("1.0.3");
     app.setOrganizationName("macsfancontrol-qt");
 
     QCommandLineParser parser;

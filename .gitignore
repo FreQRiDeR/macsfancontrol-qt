@@ -21,6 +21,5 @@ macsfancontrol
 .DS_Store
 *~
 .claude-helper.log
-build/macsfancontrol_1.0_amd64.deb
+build/macsfancontrol_*.*_amd64.deb
 /build
-macsfancontrol_1.0_amd64.deb

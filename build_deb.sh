@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_BUILD_ROOT="$ROOT_DIR/build/deb"
 OUTPUT_ROOT="$ROOT_DIR/build"
 PKG_NAME="macsfancontrol"
-VERSION="1.0"
+VERSION="1.0.3"
 ARCH="$(dpkg --print-architecture)"
 
 BUILD_ROOT="$DEFAULT_BUILD_ROOT"
