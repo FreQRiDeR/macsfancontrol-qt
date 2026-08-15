@@ -451,7 +451,6 @@ void FanControlWidget::setSensorBasedSettings(int sensorIndex, int minTemp, int 
         spinMinTemp->setValue(minTemp);
         spinMaxTemp->setValue(maxTemp);
     }
-
     // Update combo box to show the selected sensor
     for (int i = 0; i < comboSensor->count(); i++) {
         if (comboSensor->itemData(i).toInt() == sensorIndex) {

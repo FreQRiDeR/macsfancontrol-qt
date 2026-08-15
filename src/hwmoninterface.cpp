@@ -296,6 +296,14 @@ QString HWMonInterface::getFanPWMEnablePath(int fanIndex)
     return fans[fanIndex].devicePath + "/pwm" + QString::number(fans[fanIndex].fanNumber) + "_enable";
 }
 
+QString HWMonInterface::getFanTargetPath(int fanIndex)
+{
+    if (fanIndex < 0 || fanIndex >= fans.size()) {
+        return QString();
+    }
+    return fans[fanIndex].devicePath + "/fan" + QString::number(fans[fanIndex].fanNumber) + "_target";
+}
+
 int HWMonInterface::getFanCurrentRPM(int fanIndex)
 {
     QString path = getFanInputPath(fanIndex);
@@ -377,14 +385,23 @@ bool HWMonInterface::setFanPWM(int fanIndex, int pwm)
 
 bool HWMonInterface::setFanSpeed(int fanIndex, int rpm)
 {
-    // Convert RPM to PWM (0-255)
     if (fanIndex < 0 || fanIndex >= fans.size()) {
         return false;
     }
-
     const HWMonFan& fan = fans[fanIndex];
 
-    // Calculate PWM from RPM using linear mapping
+    // Prefer native RPM target interface when available (e.g. amdgpu fan1_target)
+    QString targetPath = getFanTargetPath(fanIndex);
+    if (!targetPath.isEmpty() && QFile::exists(targetPath)) {
+        int maxBound = (fan.maxRPM > 0) ? fan.maxRPM : 5000;
+        int safeRPM = qBound(fan.minRPM, rpm, maxBound);
+        if (writeIntToFile(targetPath, safeRPM)) {
+            qDebug() << "Set fan" << fanIndex << "target RPM directly to" << safeRPM;
+            return true;
+        }
+    }
+
+    // Fall back to PWM control (0-255) using linear mapping
     int pwm;
     if (fan.maxRPM > fan.minRPM) {
         double ratio = static_cast<double>(rpm - fan.minRPM) / (fan.maxRPM - fan.minRPM);
@@ -393,8 +410,6 @@ bool HWMonInterface::setFanSpeed(int fanIndex, int rpm)
         // If we don't have min/max info, use a simple percentage
         pwm = (rpm * 255) / 5000;  // Assume max 5000 RPM
     }
-
     pwm = qBound(0, pwm, 255);
-
     return setFanPWM(fanIndex, pwm);
 }

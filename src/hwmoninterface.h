@@ -78,6 +78,7 @@ private:
     QString getFanMaxPath(int fanIndex);
     QString getFanPWMPath(int fanIndex);
     QString getFanPWMEnablePath(int fanIndex);
+    QString getFanTargetPath(int fanIndex);
 };
 
 #endif // HWMONINTERFACE_H

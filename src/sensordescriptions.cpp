@@ -74,12 +74,12 @@ QMap<QString, QString> SensorDescriptions::getDefaultDescriptions()
         // CPU
         {"TCAC", "CPU A Core (PECI)"},
         {"TCAD", "CPU A Diode"},
-        {"TCAG", "CPU A GPU"},
+        // TCAG/TCBG are dummy SMC keys on Mac Pro models (no physical sensor,
+        // always report 80.0°C) and are filtered out by SMCInterface.
         {"TCAH", "CPU A Heatsink"},
         {"TCAS", "CPU A SRAM"},
         {"TCBC", "CPU B Core (PECI)"},
         {"TCBD", "CPU B Diode"},
-        {"TCBG", "CPU B GPU"},
         {"TCBH", "CPU B Heatsink"},
         {"TCBS", "CPU B SRAM"},
 

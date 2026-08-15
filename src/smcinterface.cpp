@@ -113,6 +113,17 @@ void SMCInterface::discoverTemperatureSensors()
 
             // Only add sensors with valid readings (skip -128°C and similar invalid values)
             if (sensor.temperature > -100000) {  // -100°C in millidegrees
+                // Skip known dummy sensors. On Mac Pro models (3,1/4,1/5,1), TCAG and
+                // TCBG are placeholder SMC keys with no physical sensor behind them;
+                // the SMC always reports exactly 80.0°C (80000 millidegrees) for these
+                // and the value never changes, even under load. They are not real
+                // temperatures and would otherwise show a permanent red 176°F reading.
+                if (sensor.temperature == 80000 &&
+                    (sensor.label == "TCAG" || sensor.label == "TCBG")) {
+                    qDebug() << "Skipping dummy sensor:" << sensor.label
+                             << "(no physical sensor, SMC reports constant 80.0°C)";
+                    continue;
+                }
                 sensors.append(sensor);
             }
         }

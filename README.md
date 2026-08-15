@@ -138,9 +138,9 @@ Each fan has its own control widget with three operating modes:
     - Above max temp → maximum RPM
     - Between min/max → linear interpolation between min and max RPM
   - Current temperature of selected sensor is displayed in real-time
- 
+
   - Save a preset and toggle 'Load at Boot'.
-    This will create a daemon that will launch saved settings when you boot linux. 
+    This will create a daemon that will launch saved settings when you boot linux.
 
 #### Common Controls
 
@@ -153,10 +153,13 @@ Each fan has its own control widget with three operating modes:
 #### Example: Sensor-Based Setup
 
 For GPU cooling, you might configure:
-- **Sensor**: TCAG (GPU temp sensor) - typically reading 60-85°C
+- **Sensor**: TG0D (GPU diode) - typically reading 60-85°C
 - **Min Temp**: 50°C → Fan runs at minimum speed below 50°C
 - **Max Temp**: 85°C → Fan runs at maximum speed above 85°C
 - **Between**: At 67.5°C (midpoint), fan runs at 50% speed
+> Note: On Mac Pro models, TCAG/TCBG are dummy SMC keys with no physical
+> sensor behind them (they always report 80.0°C) and are filtered out of the
+> sensor list. Use TG0D/TG1D for GPU temperatures instead.
 
 ### Temperature Monitoring
 

@@ -9,6 +9,18 @@
 #include "mainwindow.h"
 #include <unistd.h>
 #include <cstdio>
+#include <csignal>
+// The boot daemon is a failsafe that ramps fans up at boot when the machine is
+// unattended. When the user launches the GUI, the GUI sends SIGTERM to the
+// daemon to take over. Qt's default SIGTERM handler calls exit(0) without
+// running the MainWindow destructor, which would leave the lock held. Install
+// a handler that triggers a clean Qt shutdown so the destructor runs
+// releaseFanControlLock(). The daemon never restores auto mode on its own — it
+// keeps the fans at the preset until the GUI takes over.
+static void daemonSigtermHandler(int /*sig*/)
+{
+    QCoreApplication::quit();
+}
 
 // Captured debug log messages (appended by the message handler below)
 static QStringList g_debugLog;
@@ -113,7 +125,11 @@ int main(int argc, char *argv[])
             qWarning() << "Daemon mode requires root privileges";
             return 1;
         }
-
+        // Install a SIGTERM handler so the GUI can gracefully take over: the
+        // handler triggers QCoreApplication::quit(), which runs the MainWindow
+        // destructor (releaseFanControlLock) before exiting. The daemon never
+        // restores auto mode on its own.
+        std::signal(SIGTERM, daemonSigtermHandler);
         MainWindow window(nullptr, true);
         if (!window.isInitialized()) {
             qCritical().noquote() << "Daemon startup failed:" << window.initializationError();

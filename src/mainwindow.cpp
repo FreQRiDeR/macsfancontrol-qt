@@ -50,6 +50,7 @@ MainWindow::MainWindow(QWidget *parent, bool nonInteractive)
       nonInteractiveMode(nonInteractive),
       initialized(false),
       fanControlLockFd(-1),
+      hasFanControlLock(false),
       lockWatchTimer(new QTimer(this))
 {
     bool smcAvailable = false;
@@ -102,7 +103,8 @@ MainWindow::MainWindow(QWidget *parent, bool nonInteractive)
     // Acquire the single-writer fan-control lock. The interactive GUI is
     // allowed to take over from a running daemon (it will signal the daemon
     // to stand down); a daemon must not displace another live instance.
-    if (!acquireFanControlLock(/*allowTakeover=*/!nonInteractiveMode)) {
+    hasFanControlLock = acquireFanControlLock(/*allowTakeover=*/!nonInteractiveMode);
+    if (!hasFanControlLock) {
         initializationErrorMessage = "Another instance of Mac Fan Control is already "
                                      "controlling the fans.";
         qWarning().noquote() << initializationErrorMessage;
@@ -113,7 +115,8 @@ MainWindow::MainWindow(QWidget *parent, bool nonInteractive)
     }
 
     // Daemon must continually verify it still owns the lock; if the GUI
-    // launches and takes over, the daemon restores auto mode and exits.
+    // launches and takes over, the daemon stands down WITHOUT restoring auto
+    // mode (the GUI inherits fan control).
     if (nonInteractiveMode) {
         connect(lockWatchTimer, &QTimer::timeout, this, [this]() {
             if (fanControlLockFd < 0)
@@ -122,7 +125,6 @@ MainWindow::MainWindow(QWidget *parent, bool nonInteractive)
             // own it (flock is associated with the open file description).
             if (flock(fanControlLockFd, LOCK_EX | LOCK_NB) != 0 && errno == EWOULDBLOCK) {
                 qInfo() << "Fan control lock taken over by another instance; daemon standing down.";
-                restoreAutoMode();
                 releaseFanControlLock();
                 QCoreApplication::quit();
             }
@@ -159,12 +161,20 @@ MainWindow::~MainWindow()
 {
     if (!initialized)
         return;
-
     // Save current settings before exit
     saveSettings();
-
-    // Restore all fans to automatic mode on exit
-    restoreAutoMode();
+    // The daemon (nonInteractiveMode) NEVER restores auto mode on its own. It
+    // is a failsafe that keeps the fans at the saved preset until the GUI
+    // takes over. On GUI takeover the GUI immediately applies its own settings,
+    // so restoring auto here would only cause a brief fan-speed blip. On system
+    // shutdown the fans are powered off anyway, so restoring auto is pointless.
+    //
+    // The interactive GUI, however, SHOULD restore auto mode when it exits:
+    // once the user closes the GUI, nothing is controlling the fans anymore, so
+    // falling back to the firmware's automatic curve is the correct behavior.
+    if (!nonInteractiveMode) {
+        restoreAutoMode();
+    }
     // Release the single-writer lock so another instance can take over.
     releaseFanControlLock();
 }
@@ -267,7 +277,6 @@ void MainWindow::setupUI()
 
     // Initialize sensor list in fan widgets
     updateSensorListInFanWidgets();
-
     fanLayout->addStretch();
 
     // Add content to scroll area
@@ -444,6 +453,13 @@ void MainWindow::applyTheme(ThemeMode theme)
 
 void MainWindow::updateSensorData()
 {
+    // The boot daemon re-applies its active preset every tick so the fans stay
+    // at the saved values even if something (a reboot, a driver reset, a
+    // transient error) reverts them to auto. This is what makes "Load at Boot"
+    // actually persist across the session.
+    if (nonInteractiveMode && !activeBootPreset.isEmpty()) {
+        loadPresetByName(activeBootPreset);
+    }
     // Get temperature readings from both sources
     QVector<TempSensor> smcTemps = smcInterface->getTemperatures();
     QVector<HWMonSensor> hwmonSensors = hwmonInterface->getTemperatures();
@@ -768,7 +784,6 @@ static int readLockHolderPid(int fd)
     int pid = QByteArray(buf).trimmed().toInt(&ok);
     return ok ? pid : -1;
 }
-
 static void writeLockHolderPid(int fd)
 {
     if (ftruncate(fd, 0) == -1)
@@ -789,23 +804,22 @@ bool MainWindow::acquireFanControlLock(bool allowTakeover)
         // lock rather than blocking fan control entirely.
         return true;
     }
-
     if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
         fanControlLockFd = fd;
         writeLockHolderPid(fd);
         return true;
     }
-
-    // Lock is held by someone else.
+    // Lock is held by someone else (e.g. the boot daemon).
     int holderPid = readLockHolderPid(fd);
     if (!allowTakeover) {
+        // A daemon must never displace another live instance.
         ::close(fd);
         return false;
     }
-
-    // GUI takeover: politely ask the holder to quit, then wait briefly for it
-    // to release. A daemon restores auto mode and exits on SIGTERM (its
-    // destructor handles cleanup); a stale holder is reaped if still alive.
+    // GUI takeover: the boot daemon is only a failsafe that ramps fans up at
+    // boot when the machine is unattended. Once the user launches the GUI,
+    // the GUI takes precedence. Politely ask the daemon to stand down (it
+    // restores auto mode and exits on SIGTERM), then acquire the lock.
     if (holderPid > 0 && holderPid != QCoreApplication::applicationPid()) {
         if (::kill(holderPid, SIGTERM) == 0) {
             for (int i = 0; i < 20; ++i) {  // up to ~2s
@@ -818,14 +832,12 @@ bool MainWindow::acquireFanControlLock(bool allowTakeover)
             }
         }
     }
-
     // Last resort: blocking acquire (holder died without releasing).
     if (flock(fd, LOCK_EX) == 0) {
         fanControlLockFd = fd;
         writeLockHolderPid(fd);
         return true;
     }
-
     ::close(fd);
     return false;
 }
@@ -839,6 +851,7 @@ void MainWindow::releaseFanControlLock()
         ::close(fanControlLockFd);
         fanControlLockFd = -1;
     }
+    hasFanControlLock = false;
 }
 // ------------------------------------------------------------------------
 
@@ -1007,7 +1020,22 @@ void MainWindow::setPresetLaunchAtBoot(const QString& presetName, bool launchAtB
 bool MainWindow::createUserAutostart(const QString& presetName)
 {
     Q_UNUSED(presetName);
-    qWarning() << "User autostart is deprecated; boot launch is handled by the system service";
+    // Boot launch is handled by the packaged systemd service
+    // (macsfancontrol.service, WantedBy=multi-user.target). The service runs
+    // /usr/bin/macsfancontrol-boot, which execs the daemon; the daemon reads
+    // the preset marked "launchAtBoot" from QSettings and applies it.
+    //
+    // Nothing to do here beyond ensuring the service is enabled. If it is not
+    // (e.g. the package was installed without systemd), warn the user.
+    if (QFile::exists("/run/systemd/system")) {
+        QProcess proc;
+        proc.start("systemctl", QStringList() << "is-enabled" << "macsfancontrol.service");
+        proc.waitForFinished(2000);
+        QString out = QString::fromLocal8Bit(proc.readAllStandardOutput()).trimmed();
+        if (out != "enabled") {
+            qWarning() << "macsfancontrol.service is not enabled; boot launch will not work.";
+        }
+    }
     return true;
 }
 
@@ -1096,7 +1124,11 @@ bool MainWindow::loadPresetFromSettings(const QString& presetName)
 }
 bool MainWindow::loadPresetByName(const QString& presetName)
 {
-    return loadPresetFromSettings(presetName);
+    if (loadPresetFromSettings(presetName)) {
+        activeBootPreset = presetName;
+        return true;
+    }
+    return false;
 }
 QString MainWindow::getBootPresetName() const
 {
@@ -1123,7 +1155,11 @@ bool MainWindow::loadBootPreset()
         return false;
     }
     qDebug() << "Loading boot preset:" << bootPreset;
-    return loadPresetByName(bootPreset);
+    if (loadPresetByName(bootPreset)) {
+        activeBootPreset = bootPreset;
+        return true;
+    }
+    return false;
 }
 
 // Boot launch is handled by the packaged systemd service and helper script.

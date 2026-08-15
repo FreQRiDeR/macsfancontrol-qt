@@ -71,9 +71,11 @@ private:
     bool nonInteractiveMode;
     bool initialized;
     QString initializationErrorMessage;
+    QString activeBootPreset;  // Preset name the daemon re-applies each tick
 
     // Single-writer lock state (flock on /run/macsfancontrol.lock)
     int fanControlLockFd;
+    bool hasFanControlLock;
     QTimer *lockWatchTimer;
 
     QPalette defaultPalette;
