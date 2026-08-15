@@ -52,6 +52,11 @@ public:
     bool setFanManualMode(int fanIndex, bool manual);
     bool setFanPWM(int fanIndex, int pwm);  // PWM: 0-255
     bool setFanSpeed(int fanIndex, int rpm);
+    // Read back the driver's current control state for a fan (used by the
+    // daemon to re-assert a preset only when it has actually drifted).
+    // Returns false on read failure/unsupported fan. For PWM-only fans
+    // hasTarget is set false (the RPM->PWM mapping is not reversible).
+    bool getFanControlState(int fanIndex, bool &isManual, bool &hasTarget, int &targetRPM);
 
 signals:
     void error(const QString& message);

@@ -59,6 +59,15 @@ private:
         ThemeDark
     };
 
+    // Result of the "Launch at Boot" prompt dialog. Distinguishes Cancel from
+    // "OK + unchecked" so callers never modify boot flags or load a preset
+    // when the user cancels.
+    enum PresetBootChoice {
+        PresetBootLaunchAtBoot,   // accepted, checkbox checked
+        PresetBootNoBoot,         // accepted, checkbox unchecked
+        PresetBootCancelled       // dialog cancelled
+    };
+
 
 private:
     SMCInterface *smcInterface;
@@ -72,6 +81,7 @@ private:
     bool initialized;
     QString initializationErrorMessage;
     QString activeBootPreset;  // Preset name the daemon re-applies each tick
+    bool bootPresetAppliedOnce = false;  // Daemon has applied the boot preset at startup
 
     // Single-writer lock state (flock on /run/macsfancontrol.lock)
     int fanControlLockFd;
@@ -95,6 +105,8 @@ private:
     void createMenuBar();
     void connectSignals();
     void restoreAutoMode();
+    void ensureBootPresetApplied();
+    void reapplyFanFromPreset(int fanIndex);
     void updateSensorListInFanWidgets();
     void applyTheme(ThemeMode theme);
 
@@ -106,7 +118,7 @@ private:
     bool loadPresetFromSettings(const QString& presetName);
     void applyFanSettings(int fanIndex, FanMode mode, int targetRPM, int sensorIndex, int minTemp, int maxTemp);
 
-    bool promptForPresetLaunchAtBoot(const QString& presetName, bool currentValue);
+    PresetBootChoice promptForPresetLaunchAtBoot(const QString& presetName, bool currentValue);
     // Autostart helpers (per-user)
     bool createUserAutostart(const QString& presetName);
     void removeUserAutostart();

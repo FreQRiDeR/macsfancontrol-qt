@@ -40,6 +40,10 @@ public:
     int getFanCurrentRPM(int fanIndex);
     bool setFanManualMode(int fanIndex, bool enable);
     bool setFanSpeed(int fanIndex, int rpm);
+    // Read back the driver's current control state for a fan (used by the
+    // daemon to re-assert a preset only when it has actually drifted).
+    // Returns false on read failure or invalid index.
+    bool getFanControlState(int fanIndex, bool &isManual, bool &hasTarget, int &targetRPM);
 
     // Temperature operations
     QVector<TempSensor> getTemperatures();

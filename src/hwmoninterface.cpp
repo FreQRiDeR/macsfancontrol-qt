@@ -413,3 +413,39 @@ bool HWMonInterface::setFanSpeed(int fanIndex, int rpm)
     pwm = qBound(0, pwm, 255);
     return setFanPWM(fanIndex, pwm);
 }
+
+bool HWMonInterface::getFanControlState(int fanIndex, bool &isManual, bool &hasTarget, int &targetRPM)
+{
+    if (fanIndex < 0 || fanIndex >= fans.size()) {
+        return false;
+    }
+
+    const HWMonFan& fan = fans[fanIndex];
+    if (!fan.supportsManualControl) {
+        return false;
+    }
+
+    QString enablePath = getFanPWMEnablePath(fanIndex);
+    int enable = readIntFromFile(enablePath, -1);
+    if (enable < 0) {
+        return false;
+    }
+    isManual = (enable == 1);   // 1 = manual, 2 = automatic
+
+    QString targetPath = getFanTargetPath(fanIndex);
+    if (!targetPath.isEmpty() && QFile::exists(targetPath)) {
+        int target = readIntFromFile(targetPath, -1);
+        if (target < 0) {
+            return false;
+        }
+        hasTarget = true;
+        targetRPM = target;
+    } else {
+        // PWM-only fan (no readable fanN_target): the RPM->PWM mapping used by
+        // setFanSpeed() is not reversible from sysfs, so only the manual/auto
+        // flag can be self-healed.
+        hasTarget = false;
+        targetRPM = -1;
+    }
+    return true;
+}

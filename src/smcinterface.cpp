@@ -243,6 +243,26 @@ bool SMCInterface::setFanSpeed(int fanIndex, int rpm)
     return success;
 }
 
+bool SMCInterface::getFanControlState(int fanIndex, bool &isManual, bool &hasTarget, int &targetRPM)
+{
+    if (fanIndex < 0 || fanIndex >= fans.size()) {
+        return false;
+    }
+
+    const QString base = fans[fanIndex].sysfsPath;
+    int manual = readSysfsInt(base + "_manual");
+    int output = readSysfsInt(base + "_output");
+    if (manual < 0 || output < 0) {
+        // Transient read failure; caller skips this round rather than churn.
+        return false;
+    }
+
+    isManual = (manual == 1);
+    hasTarget = true;   // applesmc fans always expose _output
+    targetRPM = output;
+    return true;
+}
+
 QVector<TempSensor> SMCInterface::getTemperatures()
 {
     // Update temperature readings

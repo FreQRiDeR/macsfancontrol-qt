@@ -453,12 +453,12 @@ void MainWindow::applyTheme(ThemeMode theme)
 
 void MainWindow::updateSensorData()
 {
-    // The boot daemon re-applies its active preset every tick so the fans stay
-    // at the saved values even if something (a reboot, a driver reset, a
-    // transient error) reverts them to auto. This is what makes "Load at Boot"
-    // actually persist across the session.
+    // The boot daemon applies its preset once at startup and then only
+    // re-asserts fans whose actual sysfs state has drifted (see
+    // ensureBootPresetApplied()). Sensor-based fan speeds are still
+    // recomputed every tick below, which is required for the ramp curve.
     if (nonInteractiveMode && !activeBootPreset.isEmpty()) {
-        loadPresetByName(activeBootPreset);
+        ensureBootPresetApplied();
     }
     // Get temperature readings from both sources
     QVector<TempSensor> smcTemps = smcInterface->getTemperatures();
@@ -975,19 +975,25 @@ void MainWindow::loadSettings()
     tempPanel->setUseFahrenheit(savedUseFahrenheit);
     onTemperatureUnitChanged(savedUseFahrenheit);
 
-    for (int i = 0; i < fanWidgets.size(); i++) {
-        settings.beginGroup(QString("Fan%1").arg(i));
-        FanMode mode = static_cast<FanMode>(settings.value("mode", MODE_AUTO).toInt());
-        int targetRPM = settings.value("targetRPM", 2000).toInt();
-        int sensorIndex = settings.value("sensorIndex", -1).toInt();
-        int minTemp = settings.value("minTemp", 40).toInt();
-        int maxTemp = settings.value("maxTemp", 80).toInt();
-        if (!canonicalCelsius && (minTemp > 100 || maxTemp > 120)) {
-            minTemp = qRound((minTemp - 32.0) * 5.0 / 9.0);
-            maxTemp = qRound((maxTemp - 32.0) * 5.0 / 9.0);
+    // The daemon must NOT apply the last session's fan settings: it should
+    // only ever apply the preset marked "Launch at Boot" (loaded later via
+    // loadBootPreset()). Applying the last session here would make the daemon
+    // drive the fans with the last loaded preset regardless of the boot flag.
+    if (!nonInteractiveMode) {
+        for (int i = 0; i < fanWidgets.size(); i++) {
+            settings.beginGroup(QString("Fan%1").arg(i));
+            FanMode mode = static_cast<FanMode>(settings.value("mode", MODE_AUTO).toInt());
+            int targetRPM = settings.value("targetRPM", 2000).toInt();
+            int sensorIndex = settings.value("sensorIndex", -1).toInt();
+            int minTemp = settings.value("minTemp", 40).toInt();
+            int maxTemp = settings.value("maxTemp", 80).toInt();
+            if (!canonicalCelsius && (minTemp > 100 || maxTemp > 120)) {
+                minTemp = qRound((minTemp - 32.0) * 5.0 / 9.0);
+                maxTemp = qRound((maxTemp - 32.0) * 5.0 / 9.0);
+            }
+            applyFanSettings(i, mode, targetRPM, sensorIndex, minTemp, maxTemp);
+            settings.endGroup();
         }
-        applyFanSettings(i, mode, targetRPM, sensorIndex, minTemp, maxTemp);
-        settings.endGroup();
     }
 
     settings.endGroup();
@@ -998,16 +1004,21 @@ void MainWindow::setPresetLaunchAtBoot(const QString& presetName, bool launchAtB
 {
     QSettings settings("macsfancontrol", "macsfancontrol-qt");
     settings.beginGroup("Presets");
+    if (launchAtBoot) {
+        // Marking a preset for boot overrides/deactivates any other preset
+        // that was previously marked. Unmarking (launchAtBoot == false) must
+        // NOT clear other presets' flags, so a marking persists regardless of
+        // cancelling, selecting, or loading another preset.
+        QStringList presets = settings.childGroups();
+        for (const QString& otherPreset : presets) {
+            if (otherPreset == presetName) {
+                continue;
+            }
 
-    QStringList presets = settings.childGroups();
-    for (const QString& otherPreset : presets) {
-        if (otherPreset == presetName) {
-            continue;
+            settings.beginGroup(otherPreset);
+            settings.setValue("launchAtBoot", false);
+            settings.endGroup();
         }
-
-        settings.beginGroup(otherPreset);
-        settings.setValue("launchAtBoot", false);
-        settings.endGroup();
     }
 
     settings.beginGroup(presetName);
@@ -1126,9 +1137,68 @@ bool MainWindow::loadPresetByName(const QString& presetName)
 {
     if (loadPresetFromSettings(presetName)) {
         activeBootPreset = presetName;
+        bootPresetAppliedOnce = true;
         return true;
     }
     return false;
+}
+
+void MainWindow::ensureBootPresetApplied()
+{
+    // In steady state the applesmc/hwmon drivers hold whatever control values
+    // were last written, so re-parsing the preset and rewriting every fan's
+    // sysfs files once per second is pure waste (and spawns a `systemctl`
+    // subprocess each time via createUserAutostart()). The preset is loaded
+    // once (bootPresetAppliedOnce, set by loadPresetByName) and fans are only
+    // re-asserted here when their ACTUAL sysfs state has drifted from the
+    // intended values (e.g. applesmc driver re-insert, an external tool
+    // flipping fanN_manual back to auto, a transient write failure). This
+    // keeps the "Load at Boot" self-healing guarantee with zero steady-state
+    // writes, config reads, subprocesses, or log spam.
+    for (int i = 0; i < fanWidgets.size(); i++) {
+        FanMode mode = fanWidgets[i]->getCurrentMode();
+        bool wantManual = (mode == MODE_MANUAL || mode == MODE_SENSOR_BASED);
+
+        FanSource source = fanSources[i];
+        int sourceIndex = fanSourceIndices[i];
+        bool isManual = false;
+        bool hasTarget = false;
+        int targetRPM = 0;
+
+        bool ok = (source == FAN_SOURCE_SMC)
+                ? smcInterface->getFanControlState(sourceIndex, isManual, hasTarget, targetRPM)
+                : hwmonInterface->getFanControlState(sourceIndex, isManual, hasTarget, targetRPM);
+        if (!ok) {
+            // Read failure (or PWM-only hwmon fan without a readable target);
+            // skip this round rather than churn writes.
+            continue;
+        }
+
+        if (isManual != wantManual) {
+            reapplyFanFromPreset(i);
+            continue;
+        }
+
+        // Manual fans: re-apply only if the driver's set point drifted.
+        // (Tiny tolerance guards against platform-specific rounding.)
+        if (mode == MODE_MANUAL && hasTarget &&
+            qAbs(targetRPM - fanWidgets[i]->getTargetRPM()) > 10) {
+            reapplyFanFromPreset(i);
+        }
+        // MODE_SENSOR_BASED: the set point is recomputed every tick in
+        // updateSensorData(); only the manual flag needed checking above.
+    }
+}
+
+void MainWindow::reapplyFanFromPreset(int fanIndex)
+{
+    applyFanSettings(fanIndex,
+                     fanWidgets[fanIndex]->getCurrentMode(),
+                     fanWidgets[fanIndex]->getTargetRPM(),
+                     sensorSettings[fanIndex].sensorIndex,
+                     sensorSettings[fanIndex].minTemp,
+                     sensorSettings[fanIndex].maxTemp);
+    qInfo() << "Re-applied boot preset to fan" << (fanIndex + 1);
 }
 QString MainWindow::getBootPresetName() const
 {
@@ -1164,7 +1234,7 @@ bool MainWindow::loadBootPreset()
 
 // Boot launch is handled by the packaged systemd service and helper script.
 
-bool MainWindow::promptForPresetLaunchAtBoot(const QString& presetName, bool currentValue)
+MainWindow::PresetBootChoice MainWindow::promptForPresetLaunchAtBoot(const QString& presetName, bool currentValue)
 {
     QDialog dialog(this);
     dialog.setWindowTitle("Preset launch options");
@@ -1184,7 +1254,10 @@ bool MainWindow::promptForPresetLaunchAtBoot(const QString& presetName, bool cur
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
 
-    return dialog.exec() == QDialog::Accepted && checkBox->isChecked();
+    if (dialog.exec() != QDialog::Accepted) {
+        return PresetBootCancelled;
+    }
+    return checkBox->isChecked() ? PresetBootLaunchAtBoot : PresetBootNoBoot;
 }
 
 void MainWindow::applyFanSettings(int fanIndex, FanMode mode, int targetRPM, int sensorIndex, int minTemp, int maxTemp)
@@ -1256,7 +1329,11 @@ void MainWindow::savePreset()
     settings.endGroup();
     settings.endGroup();
 
-    bool enableBoot = promptForPresetLaunchAtBoot(presetName, launchAtBoot);
+    PresetBootChoice choice = promptForPresetLaunchAtBoot(presetName, launchAtBoot);
+    if (choice == PresetBootCancelled) {
+        return;  // User cancelled: don't save, don't change any boot flags.
+    }
+    bool enableBoot = (choice == PresetBootLaunchAtBoot);
     savePresetToSettings(presetName, enableBoot);
     if (enableBoot) {
         createUserAutostart(presetName);
@@ -1294,7 +1371,11 @@ void MainWindow::loadPreset()
         settings.endGroup();
         settings.endGroup();
 
-        bool enableBoot = promptForPresetLaunchAtBoot(presetName, launchAtBoot);
+        PresetBootChoice choice = promptForPresetLaunchAtBoot(presetName, launchAtBoot);
+        if (choice == PresetBootCancelled) {
+            return;  // User cancelled: don't load the preset, don't change boot flags.
+        }
+        bool enableBoot = (choice == PresetBootLaunchAtBoot);
         setPresetLaunchAtBoot(presetName, enableBoot);
         if (enableBoot) {
             createUserAutostart(presetName);
